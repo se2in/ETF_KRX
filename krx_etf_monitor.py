@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import getpass
@@ -632,42 +632,63 @@ def build_html_report(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KRX 액티브 ETF PDF 변화 {pretty_date}</title>
+  <title>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</title>
   <style>
-    body {{ margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: #f6f7f9; color: #17202a; }}
-    header {{ background: #0f766e; color: white; padding: 24px 28px; }}
-    header h1 {{ margin: 0 0 8px; font-size: 24px; }}
-    header p {{ margin: 0; opacity: .92; }}
-    main {{ padding: 20px 28px 48px; }}
-    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }}
-    .summary div {{ background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 14px; }}
-    .summary b {{ display: block; font-size: 22px; margin-top: 4px; }}
-    .tools {{ display: flex; gap: 10px; align-items: center; margin: 16px 0; }}
-    input {{ width: min(520px, 100%); padding: 11px 12px; border: 1px solid #cbd5df; border-radius: 6px; font-size: 15px; }}
-    .etf-card {{ background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 16px; margin: 14px 0; }}
-    .etf-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; }}
-    h2 {{ margin: 0; font-size: 19px; }}
-    h2 span {{ color: #64748b; font-weight: 500; }}
-    h3 {{ margin: 16px 0 8px; font-size: 15px; }}
-    p {{ margin: 6px 0 0; color: #526173; }}
-    .tables {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th, td {{ border-bottom: 1px solid #e7ebef; padding: 8px 7px; text-align: left; }}
-    th {{ background: #f1f5f9; color: #334155; position: sticky; top: 0; }}
-    .num {{ text-align: right; white-space: nowrap; }}
-    .type {{ font-weight: 700; white-space: nowrap; }}
-    .buy {{ color: #0f766e; }}
-    .sell {{ color: #be123c; }}
-    .empty {{ color: #64748b; text-align: center; }}
-    .skipped {{ background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }}
-    .muted {{ color: #64748b; font-size: 13px; }}
-    @media (max-width: 720px) {{ main {{ padding: 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} }}
+    :root {{
+      color-scheme: dark;
+      --bg: #050608;
+      --panel: #101318;
+      --panel-2: #151a21;
+      --line: #2a3038;
+      --line-strong: #3b434f;
+      --text: #f2f5f8;
+      --muted: #9aa6b2;
+      --amber: #f5b301;
+      --amber-soft: #2a230f;
+      --green: #19c37d;
+      --red: #ff4d5e;
+      --cyan: #3dd6e8;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{ margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); letter-spacing: 0; }}
+    header {{ border-bottom: 1px solid var(--line-strong); background: linear-gradient(180deg, #111821 0%, #07090c 100%); padding: 18px 22px 16px; }}
+    .topline {{ display: flex; align-items: center; gap: 10px; color: var(--amber); font-size: 12px; font-weight: 700; text-transform: uppercase; }}
+    .ticker-dot {{ width: 9px; height: 9px; background: var(--amber); display: inline-block; }}
+    header h1 {{ margin: 10px 0 8px; font-size: clamp(22px, 3vw, 34px); line-height: 1.2; font-weight: 800; }}
+    header p {{ margin: 0; color: var(--muted); font-size: 14px; }}
+    main {{ padding: 18px 22px 44px; }}
+    .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }}
+    .summary div {{ background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 4px; padding: 12px 13px; color: var(--muted); font-size: 12px; text-transform: uppercase; }}
+    .summary b {{ display: block; color: var(--text); font-size: 26px; line-height: 1; margin-top: 8px; font-family: Consolas, 'Courier New', monospace; }}
+    .tools {{ display: flex; gap: 10px; align-items: center; margin: 14px 0 10px; }}
+    input {{ width: min(620px, 100%); padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: #0b0e12; color: var(--text); font-size: 14px; outline: none; }}
+    input:focus {{ border-color: var(--amber); box-shadow: 0 0 0 2px rgba(245, 179, 1, .18); }}
+    .etf-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; margin: 12px 0; box-shadow: 0 12px 30px rgba(0, 0, 0, .18); }}
+    .etf-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 10px; }}
+    h2 {{ margin: 0; font-size: 18px; line-height: 1.35; }}
+    h2 span {{ color: var(--amber); font-weight: 700; font-family: Consolas, 'Courier New', monospace; }}
+    h3 {{ margin: 14px 0 8px; font-size: 13px; color: var(--cyan); font-weight: 800; text-transform: uppercase; }}
+    p {{ margin: 6px 0 0; color: var(--muted); }}
+    .tables {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 12px; background: #0b0e12; }}
+    th, td {{ border-bottom: 1px solid var(--line); padding: 8px 7px; text-align: left; }}
+    th {{ background: #191f27; color: var(--amber); position: sticky; top: 0; font-size: 11px; text-transform: uppercase; }}
+    tr:hover td {{ background: #111821; }}
+    .num {{ text-align: right; white-space: nowrap; font-family: Consolas, 'Courier New', monospace; }}
+    .type {{ font-weight: 800; white-space: nowrap; font-family: Consolas, 'Courier New', monospace; }}
+    .buy {{ color: var(--green); }}
+    .sell {{ color: var(--red); }}
+    .empty {{ color: var(--muted); text-align: center; }}
+    .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
+    .muted {{ color: var(--muted); font-size: 13px; }}
+    @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} }}
   </style>
 </head>
 <body>
 <header>
-  <h1>KRX 액티브 ETF PDF 변화 전체 리포트</h1>
-  <p>{pretty_date} 기준 · 생성 {generated_at}</p>
+  <div class="topline"><span class="ticker-dot"></span> YUJIN SECURITIES | ACTIVE ETF MONITOR</div>
+  <h1>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</h1>
+  <p>{pretty_date} 기준 | 생성 {generated_at} | KRX PDF 보유종목 변화</p>
 </header>
 <main>
   <div class="summary">
@@ -678,7 +699,7 @@ def build_html_report(
     <div>매도/감소<b>{total_sell}</b></div>
   </div>
   <div class="tools"><input id="search" placeholder="ETF명, ETF코드, 종목명, 종목코드 검색"></div>
-  <p class="muted">텔레그램은 요약만 보내고, 이 HTML에는 감지된 모든 변화가 표시됩니다.</p>
+  <p class="muted">Telegram summary only. This HTML page shows every detected holding change.</p>
   {skipped_html}
   {no_change_html}
   {body}

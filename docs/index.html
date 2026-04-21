@@ -3,65 +3,33 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KRX 액티브 ETF PDF 변화 2026-04-21</title>
+  <title>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</title>
   <style>
-    body { margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: #f6f7f9; color: #17202a; }
-    header { background: #0f766e; color: white; padding: 24px 28px; }
-    header h1 { margin: 0 0 8px; font-size: 24px; }
-    header p { margin: 0; opacity: .92; }
-    main { padding: 20px 28px 48px; }
-    .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
-    .summary div { background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 14px; }
-    .summary b { display: block; font-size: 22px; margin-top: 4px; }
-    .tools { display: flex; gap: 10px; align-items: center; margin: 16px 0; }
-    input { width: min(520px, 100%); padding: 11px 12px; border: 1px solid #cbd5df; border-radius: 6px; font-size: 15px; }
-    .etf-card { background: white; border: 1px solid #d8dee4; border-radius: 8px; padding: 16px; margin: 14px 0; }
-    .etf-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
-    h2 { margin: 0; font-size: 19px; }
-    h2 span { color: #64748b; font-weight: 500; }
-    h3 { margin: 16px 0 8px; font-size: 15px; }
-    p { margin: 6px 0 0; color: #526173; }
-    .tables { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { border-bottom: 1px solid #e7ebef; padding: 8px 7px; text-align: left; }
-    th { background: #f1f5f9; color: #334155; position: sticky; top: 0; }
-    .num { text-align: right; white-space: nowrap; }
-    .type { font-weight: 700; white-space: nowrap; }
-    .buy { color: #0f766e; }
-    .sell { color: #be123c; }
-    .empty { color: #64748b; text-align: center; }
-    .skipped { background: #fff7ed; border: 1px solid #fed7aa; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; }
-    .muted { color: #64748b; font-size: 13px; }
-    @media (max-width: 720px) { main { padding: 14px; } .tables { grid-template-columns: 1fr; overflow-x: auto; } table { min-width: 620px; } }
+    :root { color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --cyan: #3dd6e8; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); letter-spacing: 0; }
+    header { border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #111821 0%, #07090c 100%); padding: 18px 22px 16px; }
+    .topline { display: flex; align-items: center; gap: 10px; color: var(--amber); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .ticker-dot { width: 9px; height: 9px; background: var(--amber); display: inline-block; }
+    h1 { margin: 10px 0 8px; font-size: clamp(22px, 3vw, 34px); line-height: 1.2; }
+    p { color: var(--muted); line-height: 1.7; }
+    main { padding: 18px 22px 44px; }
+    .panel { max-width: 900px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--amber); border-radius: 4px; padding: 18px; }
+    .status { color: var(--cyan); font-weight: 800; font-size: 13px; text-transform: uppercase; }
+    @media (max-width: 720px) { main { padding: 14px; } header { padding: 16px 14px; } }
   </style>
 </head>
 <body>
-<header>
-  <h1>KRX 액티브 ETF PDF 변화 전체 리포트</h1>
-  <p>2026-04-21 기준 · 생성 2026-04-21 14:41:19</p>
-</header>
-<main>
-  <div class="summary">
-    <div>대상 ETF<b>301</b></div>
-    <div>변화 ETF<b>0</b></div>
-    <div>전체 변화<b>0</b></div>
-    <div>매수/증가<b>0</b></div>
-    <div>매도/감소<b>0</b></div>
-  </div>
-  <div class="tools"><input id="search" placeholder="ETF명, ETF코드, 종목명, 종목코드 검색"></div>
-  <p class="muted">텔레그램은 요약만 보내고, 이 HTML에는 감지된 모든 변화가 표시됩니다.</p>
-  
-  <section class="etf-card"><h2>감지된 비중 변화가 없습니다.</h2></section>
-  
-</main>
-<script>
-  const input = document.getElementById('search');
-  input.addEventListener('input', () => {
-    const q = input.value.trim().toLowerCase();
-    document.querySelectorAll('.etf-card[data-search]').forEach(card => {
-      card.style.display = card.dataset.search.toLowerCase().includes(q) ? '' : 'none';
-    });
-  });
-</script>
+  <header>
+    <div class="topline"><span class="ticker-dot"></span> YUJIN SECURITIES | ACTIVE ETF MONITOR</div>
+    <h1>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</h1>
+    <p>KRX PDF 보유종목 변화 리포트</p>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="status">REPORT READY AFTER FIRST RUN</div>
+      <p>아직 생성된 ETF 리포트가 없습니다. <strong>run_collect_publish.bat</strong>를 실행하면 이 페이지가 최신 ETF 변화 대쉬보드로 바뀍니다.</p>
+    </section>
+  </main>
 </body>
 </html>

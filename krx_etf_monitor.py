@@ -794,7 +794,8 @@ def run_collection(args: argparse.Namespace) -> int:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)
             report = build_report(trade_date, etfs, changes_by_etf, skipped, config)
             html_path = build_html_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
-            report = f"{report}\n\n전체 HTML 리포트: {html_path.resolve()}"
+            public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
+            report = f"{report}\n\n전체 HTML 리포트: {public_report_url}"
             finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}")
         except Exception as exc:
             finish_run(conn, run_id, "FAILED", str(exc))

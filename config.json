@@ -1,18 +1,15 @@
-﻿{
-    "database_path":  "data/krx_active_etf_holdings.sqlite",
-    "watchlist":  [
-
-                  ],
-    "include_keywords":  [
-                             "액티브"
-                         ],
-    "exclude_keywords":  [
-
-                         ],
-    "min_weight_delta_pp":  0.05,
-    "max_etfs_in_telegram":  9999,
-    "max_changes_per_etf":  10,
-    "max_buy_per_etf":  10,
-    "max_sell_per_etf":  10,
-    "html_report_path":  "reports/latest_changes.html"
+{
+  "database_path": "data/krx_active_etf_holdings.sqlite",
+  "watchlist": [],
+  "include_keywords": [
+    "액티브"
+  ],
+  "exclude_keywords": [],
+  "min_weight_delta_pp": 0.05,
+  "max_etfs_in_telegram": 9999,
+  "max_changes_per_etf": 10,
+  "max_buy_per_etf": 10,
+  "max_sell_per_etf": 10,
+  "html_report_path": "reports/latest_changes.html",
+  "public_report_url": "https://se2in.github.io/ETF_KRX/"
 }

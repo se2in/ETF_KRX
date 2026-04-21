@@ -16,6 +16,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from pptx_report import build_pptx_report
+
 KST = ZoneInfo("Asia/Seoul")
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
 KRX_CREDENTIAL_SERVICE = "se2in-etf-monitor-krx"
@@ -26,8 +28,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "include_keywords": ["액티브"],
     "exclude_keywords": [],
     "min_weight_delta_pp": 0.05,
-    "max_etfs_in_telegram": 30,
+    "max_etfs_in_telegram": 9999,
     "max_changes_per_etf": 10,
+    "max_buy_per_etf": 10,
+    "max_sell_per_etf": 10,
+    "html_report_path": "reports/latest_changes.html",
+    "pptx_report_path": "reports/latest_changes.pptx",
+    "public_report_url": "https://se2in.github.io/ETF_KRX/",
+    "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx",
 }
 
 
@@ -562,6 +570,7 @@ def build_html_report(
     total_changes = sum(len(changes) for changes in changes_by_etf.values())
     total_buy = sum(len([item for item in changes if item.weight_delta > 0]) for changes in changes_by_etf.values())
     total_sell = sum(len([item for item in changes if item.weight_delta < 0]) for changes in changes_by_etf.values())
+    pptx_url = html_cell(str(config.get("public_pptx_url", "latest_changes.pptx")))
 
     latest_path = Path(str(config.get("html_report_path", "reports/latest_changes.html")))
     latest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -577,7 +586,7 @@ def build_html_report(
         def render_rows(items: list[Change], side: str) -> str:
             rows: list[str] = []
             for item in items:
-                label = "신규" if item.change_type == "ADDED" else "제외" if item.change_type == "REMOVED" else ("증가" if item.weight_delta > 0 else "감소")
+                label = "\uc2e0\uaddc" if item.change_type == "ADDED" else "\uc81c\uc678" if item.change_type == "REMOVED" else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c")
                 rows.append(
                     "<tr>"
                     f"<td class=\"type {side}\">{label}</td>"
@@ -588,7 +597,7 @@ def build_html_report(
                     f"<td class=\"num delta {side}\">{format_delta(item.weight_delta)}</td>"
                     "</tr>"
                 )
-            return "\n".join(rows) if rows else "<tr><td colspan=\"6\" class=\"empty\">해당 변화 없음</td></tr>"
+            return "\n".join(rows) if rows else "<tr><td colspan=\"6\" class=\"empty\">\ud574\ub2f9 \ubcc0\ud654 \uc5c6\uc74c</td></tr>"
 
         sections.append(
             f"""
@@ -596,21 +605,21 @@ def build_html_report(
               <div class="etf-head">
                 <div>
                   <h2>{html_cell(etf.name)} <span>{html_cell(etf.ticker)}</span></h2>
-                  <p>매수/비중증가 {len(buys)}건 · 매도/비중감소 {len(sells)}건 · 전체 {len(changes)}건</p>
+                  <p>\ub9e4\uc218/\ube44\uc911\uc99d\uac00 {len(buys)}\uac74 | \ub9e4\ub3c4/\ube44\uc911\uac10\uc18c {len(sells)}\uac74 | \uc804\uccb4 {len(changes)}\uac74</p>
                 </div>
               </div>
               <div class="tables">
                 <div>
-                  <h3>매수/비중증가 전체</h3>
+                  <h3>\ub9e4\uc218/\ube44\uc911\uc99d\uac00 \uc804\uccb4</h3>
                   <table>
-                    <thead><tr><th>구분</th><th>종목명</th><th>코드</th><th>이전</th><th>현재</th><th>변화</th></tr></thead>
+                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
                     <tbody>{render_rows(buys, 'buy')}</tbody>
                   </table>
                 </div>
                 <div>
-                  <h3>매도/비중감소 전체</h3>
+                  <h3>\ub9e4\ub3c4/\ube44\uc911\uac10\uc18c \uc804\uccb4</h3>
                   <table>
-                    <thead><tr><th>구분</th><th>종목명</th><th>코드</th><th>이전</th><th>현재</th><th>변화</th></tr></thead>
+                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
                     <tbody>{render_rows(sells, 'sell')}</tbody>
                   </table>
                 </div>
@@ -622,9 +631,9 @@ def build_html_report(
     skipped_html = ""
     if skipped:
         skipped_items = "".join(f"<li>{html_cell(item)}</li>" for item in skipped)
-        skipped_html = f"<details class=\"skipped\"><summary>수집 실패/데이터 없음 {len(skipped)}개</summary><ul>{skipped_items}</ul></details>"
+        skipped_html = f"<details class=\"skipped\"><summary>\uc218\uc9d1 \uc2e4\ud328/\ub370\uc774\ud130 \uc5c6\uc74c {len(skipped)}\uac1c</summary><ul>{skipped_items}</ul></details>"
 
-    no_change_html = "" if changed_etfs else "<section class=\"etf-card\"><h2>감지된 비중 변화가 없습니다.</h2></section>"
+    no_change_html = "" if changed_etfs else "<section class=\"etf-card\"><h2>\uac10\uc9c0\ub41c \ube44\uc911 \ubcc0\ud654\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.</h2></section>"
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
     body = "\n".join(sections)
     document = f"""<!doctype html>
@@ -632,23 +641,9 @@ def build_html_report(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</title>
+  <title>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</title>
   <style>
-    :root {{
-      color-scheme: dark;
-      --bg: #050608;
-      --panel: #101318;
-      --panel-2: #151a21;
-      --line: #2a3038;
-      --line-strong: #3b434f;
-      --text: #f2f5f8;
-      --muted: #9aa6b2;
-      --amber: #f5b301;
-      --amber-soft: #2a230f;
-      --green: #19c37d;
-      --red: #ff4d5e;
-      --cyan: #3dd6e8;
-    }}
+    :root {{ color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); letter-spacing: 0; }}
     header {{ border-bottom: 1px solid var(--line-strong); background: linear-gradient(180deg, #111821 0%, #07090c 100%); padding: 18px 22px 16px; }}
@@ -663,6 +658,7 @@ def build_html_report(
     .tools {{ display: flex; gap: 10px; align-items: center; margin: 14px 0 10px; }}
     input {{ width: min(620px, 100%); padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: #0b0e12; color: var(--text); font-size: 14px; outline: none; }}
     input:focus {{ border-color: var(--amber); box-shadow: 0 0 0 2px rgba(245, 179, 1, .18); }}
+    .download-link {{ display: inline-block; margin-left: 10px; color: #050608; background: var(--amber); padding: 7px 10px; border-radius: 4px; font-weight: 800; text-decoration: none; }}
     .etf-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; margin: 12px 0; box-shadow: 0 12px 30px rgba(0, 0, 0, .18); }}
     .etf-head {{ display: flex; justify-content: space-between; gap: 12px; align-items: start; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 10px; }}
     h2 {{ margin: 0; font-size: 18px; line-height: 1.35; }}
@@ -681,25 +677,25 @@ def build_html_report(
     .empty {{ color: var(--muted); text-align: center; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
     .muted {{ color: var(--muted); font-size: 13px; }}
-    @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} }}
+    @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} .download-link {{ margin: 8px 0 0; }} }}
   </style>
 </head>
 <body>
 <header>
   <div class="topline"><span class="ticker-dot"></span> YUJIN SECURITIES | ACTIVE ETF MONITOR</div>
-  <h1>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</h1>
-  <p>{pretty_date} 기준 | 생성 {generated_at} | KRX PDF 보유종목 변화</p>
+  <h1>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</h1>
+  <p>{pretty_date} \uae30\uc900 | \uc0dd\uc131 {generated_at} | KRX PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654</p>
 </header>
 <main>
   <div class="summary">
-    <div>대상 ETF<b>{len(etfs)}</b></div>
-    <div>변화 ETF<b>{len(changed_etfs)}</b></div>
-    <div>전체 변화<b>{total_changes}</b></div>
-    <div>매수/증가<b>{total_buy}</b></div>
-    <div>매도/감소<b>{total_sell}</b></div>
+    <div>\ub300\uc0c1 ETF<b>{len(etfs)}</b></div>
+    <div>\ubcc0\ud654 ETF<b>{len(changed_etfs)}</b></div>
+    <div>\uc804\uccb4 \ubcc0\ud654<b>{total_changes}</b></div>
+    <div>\ub9e4\uc218/\uc99d\uac00<b>{total_buy}</b></div>
+    <div>\ub9e4\ub3c4/\uac10\uc18c<b>{total_sell}</b></div>
   </div>
-  <div class="tools"><input id="search" placeholder="ETF명, ETF코드, 종목명, 종목코드 검색"></div>
-  <p class="muted">Telegram summary only. This HTML page shows every detected holding change.</p>
+  <div class="tools"><input id="search" placeholder="ETF\uba85, ETF\ucf54\ub4dc, \uc885\ubaa9\uba85, \uc885\ubaa9\ucf54\ub4dc \uac80\uc0c9"></div>
+  <p class="muted">\ud154\ub808\uadf8\ub7a8\uc740 \uc694\uc57d\ub9cc \ubcf4\ub0b4\uace0, \uc774 HTML\uc5d0\ub294 \uac10\uc9c0\ub41c \ubaa8\ub4e0 \ubcc0\ud654\uac00 \ud45c\uc2dc\ub429\ub2c8\ub2e4. <a class="download-link" href="{pptx_url}">PPTX \ubcf4\uace0\uc11c \ub2e4\uc6b4\ub85c\ub4dc</a></p>
   {skipped_html}
   {no_change_html}
   {body}
@@ -794,9 +790,11 @@ def run_collection(args: argparse.Namespace) -> int:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)
             report = build_report(trade_date, etfs, changes_by_etf, skipped, config)
             html_path = build_html_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
+            pptx_path = build_pptx_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
             public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
-            report = f"{report}\n\n전체 HTML 리포트: {public_report_url}"
-            finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}")
+            public_pptx_url = str(config.get("public_pptx_url", "https://se2in.github.io/ETF_KRX/latest_changes.pptx")).strip()
+            report = f"{report}\n\n?? HTML ???: {public_report_url}\nPPTX ???: {public_pptx_url}"
+            finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; pptx={pptx_path}")
         except Exception as exc:
             finish_run(conn, run_id, "FAILED", str(exc))
             raise

@@ -11,5 +11,7 @@
   "max_buy_per_etf": 10,
   "max_sell_per_etf": 10,
   "html_report_path": "reports/latest_changes.html",
-  "public_report_url": "https://se2in.github.io/ETF_KRX/"
+  "pptx_report_path": "reports/latest_changes.pptx",
+  "public_report_url": "https://se2in.github.io/ETF_KRX/",
+  "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx"
 }

@@ -5,21 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</title>
   <style>
-    :root {
-      color-scheme: dark;
-      --bg: #050608;
-      --panel: #101318;
-      --panel-2: #151a21;
-      --line: #2a3038;
-      --line-strong: #3b434f;
-      --text: #f2f5f8;
-      --muted: #9aa6b2;
-      --amber: #f5b301;
-      --amber-soft: #2a230f;
-      --green: #19c37d;
-      --red: #ff4d5e;
-      --cyan: #3dd6e8;
-    }
+    :root { color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }
     * { box-sizing: border-box; }
     body { margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); letter-spacing: 0; }
     header { border-bottom: 1px solid var(--line-strong); background: linear-gradient(180deg, #111821 0%, #07090c 100%); padding: 18px 22px 16px; }
@@ -34,6 +20,7 @@
     .tools { display: flex; gap: 10px; align-items: center; margin: 14px 0 10px; }
     input { width: min(620px, 100%); padding: 11px 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: #0b0e12; color: var(--text); font-size: 14px; outline: none; }
     input:focus { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(245, 179, 1, .18); }
+    .download-link { display: inline-block; margin-left: 10px; color: #050608; background: var(--amber); padding: 7px 10px; border-radius: 4px; font-weight: 800; text-decoration: none; }
     .etf-card { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 14px; margin: 12px 0; box-shadow: 0 12px 30px rgba(0, 0, 0, .18); }
     .etf-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 10px; }
     h2 { margin: 0; font-size: 18px; line-height: 1.35; }
@@ -52,14 +39,14 @@
     .empty { color: var(--muted); text-align: center; }
     .skipped { background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }
     .muted { color: var(--muted); font-size: 13px; }
-    @media (max-width: 720px) { main { padding: 14px; } header { padding: 16px 14px; } .tables { grid-template-columns: 1fr; overflow-x: auto; } table { min-width: 620px; } }
+    @media (max-width: 720px) { main { padding: 14px; } header { padding: 16px 14px; } .tables { grid-template-columns: 1fr; overflow-x: auto; } table { min-width: 620px; } .download-link { margin: 8px 0 0; } }
   </style>
 </head>
 <body>
 <header>
   <div class="topline"><span class="ticker-dot"></span> YUJIN SECURITIES | ACTIVE ETF MONITOR</div>
   <h1>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</h1>
-  <p>2026-04-21 기준 | 생성 2026-04-21 15:20:44 | KRX PDF 보유종목 변화</p>
+  <p>2026-04-21 기준 | 생성 2026-04-21 15:33:46 | KRX PDF 보유종목 변화</p>
 </header>
 <main>
   <div class="summary">
@@ -70,7 +57,7 @@
     <div>매도/감소<b>0</b></div>
   </div>
   <div class="tools"><input id="search" placeholder="ETF명, ETF코드, 종목명, 종목코드 검색"></div>
-  <p class="muted">Telegram summary only. This HTML page shows every detected holding change.</p>
+  <p class="muted">텔레그램은 요약만 보내고, 이 HTML에는 감지된 모든 변화가 표시됩니다. <a class="download-link" href="https://se2in.github.io/ETF_KRX/latest_changes.pptx">PPTX 보고서 다운로드</a></p>
   
   <section class="etf-card"><h2>감지된 비중 변화가 없습니다.</h2></section>
   

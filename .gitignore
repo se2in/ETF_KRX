@@ -1,0 +1,11 @@
+﻿.env
+.env.txt
+*.env
+data/
+reports/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.matplotlib-cache/
+public/

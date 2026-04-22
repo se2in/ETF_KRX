@@ -36,6 +36,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "pptx_report_path": "reports/latest_changes.pptx",
     "public_report_url": "https://se2in.github.io/ETF_KRX/",
     "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx",
+    "skip_unready_pdf": True,
+    "unready_cash_weight_threshold": 90.0,
+    "unready_removed_ratio_threshold": 0.6,
 }
 
 
@@ -422,6 +425,61 @@ def load_holdings_from_db(conn: sqlite3.Connection, etf_ticker: str, trade_date:
     return {row["holding_code"]: row for row in rows}
 
 
+def delete_holdings_for_date(conn: sqlite3.Connection, etf: Etf, trade_date: str) -> None:
+    conn.execute("DELETE FROM holdings WHERE trade_date = ? AND etf_ticker = ?", (trade_date, etf.ticker))
+    conn.commit()
+
+
+def holding_compare_rows(holdings: list[Holding]) -> dict[str, dict[str, Any]]:
+    return {item.holding_code: {"holding_name": item.holding_name, "weight": item.weight} for item in holdings}
+
+
+def row_holding_name(row: Any) -> str:
+    try:
+        return str(row["holding_name"] or "")
+    except Exception:
+        return ""
+
+
+def row_weight(row: Any) -> float | None:
+    try:
+        value = row["weight"]
+    except Exception:
+        return None
+    return None if value is None else float(value)
+
+
+def is_cash_holding(code: str, row: Any) -> bool:
+    name = row_holding_name(row)
+    return code in {"010010", "CASH", "KRW"} or "현금" in name or "CASH" in name.upper()
+
+
+def unready_pdf_reason(
+    etf: Etf,
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    config: dict[str, Any],
+) -> str | None:
+    if not config.get("skip_unready_pdf", True):
+        return None
+    if len(previous) < 5 or not current:
+        return None
+
+    cash_weight = sum((row_weight(row) or 0.0) for code, row in current.items() if is_cash_holding(code, row))
+    removed_ratio = len(set(previous) - set(current)) / max(1, len(previous))
+    current_ratio = len(current) / max(1, len(previous))
+    cash_threshold = float(config.get("unready_cash_weight_threshold", 90.0))
+    removed_threshold = float(config.get("unready_removed_ratio_threshold", 0.6))
+
+    if cash_weight >= cash_threshold and removed_ratio >= removed_threshold and current_ratio <= 0.5:
+        return (
+            f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8 \uc758\uc2ec: \uc6d0\ud654\ud604\uae08 {cash_weight:.2f}%, "
+            f"\uae30\uc874 \uc885\ubaa9 {removed_ratio:.0%} \ub204\ub77d"
+        )
+    return None
+
+
+
 def compare_holdings(etf: Etf, trade_date: str, previous: dict[str, sqlite3.Row], current: dict[str, sqlite3.Row], min_delta: float) -> list[Change]:
     changes: list[Change] = []
     for code in set(previous) | set(current):
@@ -791,17 +849,26 @@ def run_collection(args: argparse.Namespace) -> int:
                     actual_date, holdings = client.fetch_holdings(etf, requested_date)
                     time.sleep(float(args.sleep))
                     if not holdings:
-                        skipped.append(f"{etf.name}({etf.ticker})")
+                        skipped.append(f"{etf.name}({etf.ticker}): \ub370\uc774\ud130 \uc5c6\uc74c \ub610\ub294 PDF \ubbf8\uc5c5\ub370\uc774\ud2b8")
+                        continue
+                    prev_date = previous_trade_date_in_db(conn, etf.ticker, actual_date)
+                    previous_holdings = load_holdings_from_db(conn, etf.ticker, prev_date) if prev_date else {}
+                    current_holdings = holding_compare_rows(holdings)
+                    reason = unready_pdf_reason(etf, previous_holdings, current_holdings, config) if prev_date else None
+                    if reason:
+                        existing_current = load_holdings_from_db(conn, etf.ticker, actual_date)
+                        if unready_pdf_reason(etf, previous_holdings, existing_current, config):
+                            delete_holdings_for_date(conn, etf, actual_date)
+                        skipped.append(f"{etf.name}({etf.ticker}): {reason}")
                         continue
                     replace_holdings(conn, etf, actual_date, holdings)
-                    prev_date = previous_trade_date_in_db(conn, etf.ticker, actual_date)
                     if not prev_date:
                         continue
                     changes = compare_holdings(
                         etf,
                         actual_date,
-                        load_holdings_from_db(conn, etf.ticker, prev_date),
-                        load_holdings_from_db(conn, etf.ticker, actual_date),
+                        previous_holdings,
+                        current_holdings,
                         min_delta=float(config.get("min_weight_delta_pp", 0.05)),
                     )
                     all_changes.extend(changes)

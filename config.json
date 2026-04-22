@@ -13,5 +13,8 @@
   "html_report_path": "reports/latest_changes.html",
   "pptx_report_path": "reports/latest_changes.pptx",
   "public_report_url": "https://se2in.github.io/ETF_KRX/",
-  "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx"
+  "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx",
+  "skip_unready_pdf": true,
+  "unready_cash_weight_threshold": 90.0,
+  "unready_removed_ratio_threshold": 0.6
 }

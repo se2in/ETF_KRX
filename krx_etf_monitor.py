@@ -8,6 +8,7 @@ import os
 import sqlite3
 import sys
 import time
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -16,8 +17,6 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import requests
-
-from pptx_report import build_pptx_report
 
 KST = ZoneInfo("Asia/Seoul")
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
@@ -32,16 +31,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "database_path": "data/krx_active_etf_holdings.sqlite",
     "watchlist": [],
     "include_keywords": ["액티브"],
-    "exclude_keywords": ["금리", "국채", "금융채", "회사채", "채권", "머니마켓", "비타", "유니콘"],
+    "exclude_keywords": ["금리", "국채", "금융채", "은행채", "회사채", "채권", "머니마켓", "비타", "유니콘"],
     "min_weight_delta_pp": 0.05,
     "max_etfs_in_telegram": 9999,
     "max_changes_per_etf": 10,
     "max_buy_per_etf": 10,
     "max_sell_per_etf": 10,
     "html_report_path": "reports/latest_changes.html",
-    "pptx_report_path": "reports/latest_changes.pptx",
+    "image_report_path": "reports/latest_changes.png",
     "public_report_url": "https://se2in.github.io/ETF_KRX/",
-    "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx",
+    "public_image_url": "https://se2in.github.io/ETF_KRX/latest_changes.png",
     "skip_unready_pdf": True,
     "unready_cash_weight_threshold": 90.0,
     "unready_removed_ratio_threshold": 0.6,
@@ -1027,6 +1026,150 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
     </section>
     """
 
+
+def build_image_report(
+    trade_date: str,
+    etfs: list[Etf],
+    changes_by_etf: dict[str, list[Change]],
+    skipped: list[str],
+    config: dict[str, Any],
+    run_id: int,
+) -> Path:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        raise RuntimeError("Pillow is not installed. Run: python -m pip install -r requirements.txt") from exc
+
+    latest_path = Path(str(config.get("image_report_path", "reports/latest_changes.png")))
+    latest_path.parent.mkdir(parents=True, exist_ok=True)
+    dated_path = latest_path.parent / f"changes_{trade_date}_run_{run_id}.png"
+
+    pretty_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
+    generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    changed_etfs = [etf for etf in etfs if changes_by_etf.get(etf.ticker)]
+    all_changes = [item for changes in changes_by_etf.values() for item in changes]
+    total_buy = len([item for item in all_changes if item.weight_delta > 0])
+    total_sell = len([item for item in all_changes if item.weight_delta < 0])
+    buy_average, sell_average, above_buys, above_sells = above_average_change_sets(all_changes)
+    new_entries = top_new_entries(changes_by_etf, 10)
+    amount_buys, amount_sells = aggregate_amount_flows(changes_by_etf)
+
+    width, height = 1600, 2600
+    image = Image.new("RGB", (width, height), "#050608")
+    draw = ImageDraw.Draw(image)
+
+    def load_font(size: int, bold: bool = False) -> Any:
+        candidates = [
+            Path("C:/Windows/Fonts/malgunbd.ttf" if bold else "C:/Windows/Fonts/malgun.ttf"),
+            Path("C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return ImageFont.truetype(str(candidate), size)
+        return ImageFont.load_default()
+
+    font_hero = load_font(54, True)
+    font_h1 = load_font(34, True)
+    font_h2 = load_font(25, True)
+    font_body = load_font(22)
+    font_small = load_font(18)
+    font_num = load_font(24, True)
+
+    bg_panel = "#101318"
+    line = "#2a3038"
+    amber = "#f5b301"
+    text = "#f2f5f8"
+    muted = "#9aa6b2"
+    red = "#ff4d5e"
+    cyan = "#3dd6e8"
+    green = "#19c37d"
+
+    draw.rectangle([0, 0, width, 260], fill="#0b1016")
+    draw.rectangle([0, 258, width, 260], fill=amber)
+    draw.text((42, 32), "EUGENE SECURITIES | ACTIVE ETF MONITOR", font=font_small, fill=amber)
+    draw.text((42, 78), "유진증권 안상현 센터장의 ETF 변동율 체크", font=font_hero, fill=text)
+    draw.text((42, 156), f"{pretty_date} 기준 | 생성 {generated_at} | AI 이미지 리포트", font=font_body, fill=muted)
+
+    metrics = [
+        ("대상 ETF", len(etfs), amber),
+        ("변화 ETF", len(changed_etfs), cyan),
+        ("전체 변화", len(all_changes), text),
+        ("매수/증가", total_buy, red),
+        ("매도/감소", total_sell, cyan),
+    ]
+    x, y = 42, 300
+    box_w, box_h, gap = 286, 110, 18
+    for label, value, color in metrics:
+        draw.rounded_rectangle([x, y, x + box_w, y + box_h], radius=8, fill=bg_panel, outline=line, width=2)
+        draw.rectangle([x, y, x + 6, y + box_h], fill=amber)
+        draw.text((x + 24, y + 18), label, font=font_small, fill=muted)
+        draw.text((x + 24, y + 52), f"{value:,}", font=font_num, fill=color)
+        x += box_w + gap
+
+    def section_title(title: str, subtitle: str, top: int) -> int:
+        draw.text((42, top), title, font=font_h1, fill=text)
+        if subtitle:
+            draw.text((42, top + 42), subtitle, font=font_small, fill=muted)
+            return top + 82
+        return top + 52
+
+    def truncate(value: str, length: int) -> str:
+        return value if len(value) <= length else value[: length - 1] + "…"
+
+    def draw_change_rows(title: str, rows: list[Change], top: int, color: str, average_label: str = "") -> int:
+        draw.rounded_rectangle([42, top, 1558, top + 360], radius=8, fill=bg_panel, outline=line, width=2)
+        draw.text((66, top + 22), title, font=font_h2, fill=color)
+        if average_label:
+            draw.text((1180, top + 25), average_label, font=font_small, fill=muted)
+        y_row = top + 72
+        if not rows:
+            draw.text((66, y_row), "해당 변화 없음", font=font_body, fill=muted)
+            return top + 390
+        for idx, item in enumerate(rows[:8], start=1):
+            label = "신규" if is_new_entry(item) else ("증가" if item.weight_delta > 0 else "감소")
+            line_text = (
+                f"{idx}. {label} {truncate(item.holding_name, 18)}({item.holding_code}) | "
+                f"{truncate(item.etf_name, 24)} | {format_weight(item.previous_weight)} -> "
+                f"{format_weight(item.current_weight)} ({format_delta(item.weight_delta)})"
+            )
+            draw.text((66, y_row), line_text, font=font_body, fill=text)
+            y_row += 34
+        return top + 390
+
+    def draw_amount_rows(title: str, rows: list[dict[str, Any]], top: int, color: str) -> int:
+        draw.rounded_rectangle([42, top, 1558, top + 280], radius=8, fill=bg_panel, outline=line, width=2)
+        draw.text((66, top + 22), title, font=font_h2, fill=color)
+        y_row = top + 72
+        if not rows:
+            draw.text((66, y_row), "해당 변화 없음", font=font_body, fill=muted)
+            return top + 310
+        for idx, row in enumerate(rows[:6], start=1):
+            row_text = (
+                f"{idx}. {truncate(str(row['holding_name']), 22)}({row['holding_code']}) | "
+                f"{format_krw(row['amount'])} | ETF {len(row['etfs'])}개"
+            )
+            draw.text((66, y_row), row_text, font=font_body, fill=text)
+            y_row += 34
+        return top + 310
+
+    y = section_title("신규 편입 TOP 10", "0%에서 플러스 비중으로 새로 편입된 종목", 460)
+    y = draw_change_rows("신규 편입 종목", new_entries, y, green)
+    y = section_title("평균 이상 비중 변화", "매수/매도 각각의 평균 이상 변화만 추려낸 전략 후보", y + 5)
+    y = draw_change_rows("매수/증가 평균 이상", above_buys, y, red, f"평균 {format_delta(buy_average)}")
+    y = draw_change_rows("매도/감소 평균 이상", above_sells, y, cyan, f"평균 -{sell_average:.2f}pp")
+    y = section_title("금액 변화 TOP", "ETF별 평가금액 변화를 종목별로 합산", y + 5)
+    y = draw_amount_rows("합산 매수 금액 TOP", amount_buys, y, red)
+    y = draw_amount_rows("합산 매도 금액 TOP", amount_sells, y, cyan)
+
+    if skipped:
+        draw.text((42, height - 86), f"PDF 미업데이트/데이터 없음: {len(skipped)}개", font=font_small, fill=muted)
+    draw.text((42, height - 48), "Generated by ETF KRX Monitor | Image report for client download", font=font_small, fill=muted)
+
+    image.save(latest_path, "PNG", optimize=True)
+    image.save(dated_path, "PNG", optimize=True)
+    return latest_path
+
+
 def build_html_report(
     trade_date: str,
     etfs: list[Etf],
@@ -1040,7 +1183,7 @@ def build_html_report(
     total_changes = sum(len(changes) for changes in changes_by_etf.values())
     total_buy = sum(len([item for item in changes if item.weight_delta > 0]) for changes in changes_by_etf.values())
     total_sell = sum(len([item for item in changes if item.weight_delta < 0]) for changes in changes_by_etf.values())
-    pptx_url = html_cell(str(config.get("public_pptx_url", "latest_changes.pptx")))
+    image_url = html_cell(str(config.get("public_image_url", "latest_changes.png")))
     flow_html = render_amount_flow_html(changes_by_etf)
 
     latest_path = Path(str(config.get("html_report_path", "reports/latest_changes.html")))
@@ -1171,7 +1314,7 @@ def build_html_report(
     <div>\ub9e4\ub3c4/\uac10\uc18c<b>{total_sell}</b></div>
   </div>
   <div class="tools"><input id="search" placeholder="ETF\uba85, ETF\ucf54\ub4dc, \uc885\ubaa9\uba85, \uc885\ubaa9\ucf54\ub4dc \uac80\uc0c9"></div>
-  <p class="muted">\ud154\ub808\uadf8\ub7a8\uc740 \uc694\uc57d\ub9cc \ubcf4\ub0b4\uace0, \uc774 HTML\uc5d0\ub294 \uac10\uc9c0\ub41c \ubaa8\ub4e0 \ubcc0\ud654\uac00 \ud45c\uc2dc\ub429\ub2c8\ub2e4. <a class="download-link" href="{pptx_url}">PPTX \ubcf4\uace0\uc11c \ub2e4\uc6b4\ub85c\ub4dc</a></p>
+  <p class="muted">\ud154\ub808\uadf8\ub7a8\uc740 \uc694\uc57d\ub9cc \ubcf4\ub0b4\uace0, \uc774 HTML\uc5d0\ub294 \uac10\uc9c0\ub41c \ubaa8\ub4e0 \ubcc0\ud654\uac00 \ud45c\uc2dc\ub429\ub2c8\ub2e4. <a class="download-link" href="{image_url}" download>\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c \ub2e4\uc6b4\ub85c\ub4dc</a></p>
   {flow_html}
   {skipped_html}
   {no_change_html}
@@ -1278,11 +1421,11 @@ def run_collection(args: argparse.Namespace) -> int:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)
             report = build_report(trade_date, etfs, changes_by_etf, skipped, config)
             html_path = build_html_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
-            pptx_path = build_pptx_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
+            image_path = build_image_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
             public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
-            public_pptx_url = str(config.get("public_pptx_url", "https://se2in.github.io/ETF_KRX/latest_changes.pptx")).strip()
-            report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\nPPTX \ubcf4\uace0\uc11c: {public_pptx_url}"
-            finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; pptx={pptx_path}")
+            public_image_url = str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip()
+            report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\n\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c: {public_image_url}"
+            finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; image={image_path}")
         except Exception as exc:
             finish_run(conn, run_id, "FAILED", str(exc))
             raise

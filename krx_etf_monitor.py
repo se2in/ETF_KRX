@@ -260,6 +260,27 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (run_id, etf_ticker, holding_code),
             FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS above_average_changes (
+            run_id INTEGER NOT NULL,
+            trade_date TEXT NOT NULL,
+            side TEXT NOT NULL,
+            etf_ticker TEXT NOT NULL,
+            etf_name TEXT NOT NULL,
+            holding_code TEXT NOT NULL,
+            holding_name TEXT NOT NULL,
+            previous_weight REAL,
+            current_weight REAL,
+            weight_delta REAL NOT NULL,
+            previous_amount REAL,
+            current_amount REAL,
+            amount_delta REAL,
+            average_abs_weight_delta REAL NOT NULL,
+            change_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, side, etf_ticker, holding_code),
+            FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
         """
     )
     ensure_column(conn, "etfs", "isin", "TEXT")
@@ -650,6 +671,24 @@ def is_new_entry(change: Change) -> bool:
     )
 
 
+def above_average_change_sets(changes: list[Change]) -> tuple[float, float, list[Change], list[Change]]:
+    buy_changes = [item for item in changes if item.weight_delta > 0]
+    sell_changes = [item for item in changes if item.weight_delta < 0]
+    buy_average = sum(item.weight_delta for item in buy_changes) / len(buy_changes) if buy_changes else 0.0
+    sell_average = sum(abs(item.weight_delta) for item in sell_changes) / len(sell_changes) if sell_changes else 0.0
+    above_average_buys = sorted(
+        [item for item in buy_changes if item.weight_delta >= buy_average],
+        key=lambda item: item.weight_delta,
+        reverse=True,
+    )
+    above_average_sells = sorted(
+        [item for item in sell_changes if abs(item.weight_delta) >= sell_average],
+        key=lambda item: abs(item.weight_delta),
+        reverse=True,
+    )
+    return buy_average, sell_average, above_average_buys, above_average_sells
+
+
 def save_new_entries(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -> None:
     entries = [item for item in changes if is_new_entry(item)]
     if not entries:
@@ -677,6 +716,49 @@ def save_new_entries(conn: sqlite3.Connection, run_id: int, changes: list[Change
                 now,
             )
             for item in entries
+        ],
+    )
+    conn.commit()
+
+
+def save_above_average_changes(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -> None:
+    buy_average, sell_average, above_average_buys, above_average_sells = above_average_change_sets(changes)
+    rows: list[tuple[str, float, Change]] = [
+        *[("BUY", buy_average, item) for item in above_average_buys],
+        *[("SELL", sell_average, item) for item in above_average_sells],
+    ]
+    if not rows:
+        return
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO above_average_changes (
+            run_id, trade_date, side, etf_ticker, etf_name,
+            holding_code, holding_name, previous_weight, current_weight,
+            weight_delta, previous_amount, current_amount, amount_delta,
+            average_abs_weight_delta, change_type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                run_id,
+                item.trade_date,
+                side,
+                item.etf_ticker,
+                item.etf_name,
+                item.holding_code,
+                item.holding_name,
+                item.previous_weight,
+                item.current_weight,
+                item.weight_delta,
+                item.previous_amount,
+                item.current_amount,
+                item.amount_delta,
+                average_abs_weight_delta,
+                item.change_type,
+                now,
+            )
+            for side, average_abs_weight_delta, item in rows
         ],
     )
     conn.commit()
@@ -827,20 +909,7 @@ def aggregate_amount_flows(changes_by_etf: dict[str, list[Change]]) -> tuple[lis
 def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
     buy_rows, sell_rows = aggregate_amount_flows(changes_by_etf)
     all_changes = [item for changes in changes_by_etf.values() for item in changes]
-    buy_changes = [item for item in all_changes if item.weight_delta > 0]
-    sell_changes = [item for item in all_changes if item.weight_delta < 0]
-    buy_average = sum(item.weight_delta for item in buy_changes) / len(buy_changes) if buy_changes else 0.0
-    sell_average = sum(abs(item.weight_delta) for item in sell_changes) / len(sell_changes) if sell_changes else 0.0
-    above_average_buys = sorted(
-        [item for item in buy_changes if item.weight_delta >= buy_average],
-        key=lambda item: item.weight_delta,
-        reverse=True,
-    )
-    above_average_sells = sorted(
-        [item for item in sell_changes if abs(item.weight_delta) >= sell_average],
-        key=lambda item: abs(item.weight_delta),
-        reverse=True,
-    )
+    buy_average, sell_average, above_average_buys, above_average_sells = above_average_change_sets(all_changes)
     new_entries = sorted(
         [item for item in all_changes if is_new_entry(item)],
         key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
@@ -1203,6 +1272,7 @@ def run_collection(args: argparse.Namespace) -> int:
                     skipped.append(f"{etf.name}({etf.ticker}): {exc}")
             save_changes(conn, run_id, all_changes)
             save_new_entries(conn, run_id, all_changes)
+            save_above_average_changes(conn, run_id, all_changes)
             changes_by_etf: dict[str, list[Change]] = {}
             for change in all_changes:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)

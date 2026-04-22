@@ -4,7 +4,14 @@
   "include_keywords": [
     "액티브"
   ],
-  "exclude_keywords": [],
+  "exclude_keywords": [
+    "금리",
+    "회사채",
+    "채권",
+    "머니마켓",
+    "비타",
+    "유니콘"
+  ],
   "min_weight_delta_pp": 0.05,
   "max_etfs_in_telegram": 9999,
   "max_changes_per_etf": 10,

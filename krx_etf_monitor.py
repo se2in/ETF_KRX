@@ -6,6 +6,7 @@ import html
 import json
 import os
 import sqlite3
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -21,12 +22,17 @@ from pptx_report import build_pptx_report
 KST = ZoneInfo("Asia/Seoul")
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
 KRX_CREDENTIAL_SERVICE = "se2in-etf-monitor-krx"
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "database_path": "data/krx_active_etf_holdings.sqlite",
     "watchlist": [],
     "include_keywords": ["액티브"],
-    "exclude_keywords": [],
+    "exclude_keywords": ["금리", "회사채", "채권", "머니마켓", "비타", "유니콘"],
     "min_weight_delta_pp": 0.05,
     "max_etfs_in_telegram": 9999,
     "max_changes_per_etf": 10,
@@ -235,6 +241,21 @@ def init_db(conn: sqlite3.Connection) -> None:
             current_amount REAL,
             amount_delta REAL,
             change_type TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, etf_ticker, holding_code),
+            FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS new_entries (
+            run_id INTEGER NOT NULL,
+            trade_date TEXT NOT NULL,
+            etf_ticker TEXT NOT NULL,
+            etf_name TEXT NOT NULL,
+            holding_code TEXT NOT NULL,
+            holding_name TEXT NOT NULL,
+            current_weight REAL NOT NULL,
+            current_amount REAL,
+            amount_delta REAL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (run_id, etf_ticker, holding_code),
             FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
@@ -620,6 +641,47 @@ def save_changes(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -
     conn.commit()
 
 
+def is_new_entry(change: Change) -> bool:
+    return (
+        change.current_weight is not None
+        and float(change.current_weight) > 0
+        and float(change.previous_weight or 0.0) <= 0
+        and change.weight_delta > 0
+    )
+
+
+def save_new_entries(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -> None:
+    entries = [item for item in changes if is_new_entry(item)]
+    if not entries:
+        return
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO new_entries (
+            run_id, trade_date, etf_ticker, etf_name,
+            holding_code, holding_name, current_weight,
+            current_amount, amount_delta, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                run_id,
+                item.trade_date,
+                item.etf_ticker,
+                item.etf_name,
+                item.holding_code,
+                item.holding_name,
+                item.current_weight,
+                item.current_amount,
+                item.amount_delta,
+                now,
+            )
+            for item in entries
+        ],
+    )
+    conn.commit()
+
+
 def format_weight(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}%"
 
@@ -671,9 +733,10 @@ def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, lis
         if buys:
             lines.append("[\ub9e4\uc218/\ube44\uc911\uc99d\uac00 \uc804\uc885\ubaa9]")
             for item in buys:
-                label = "\uc2e0\uaddc" if item.change_type == "ADDED" else "\uc99d\uac00"
+                marker = "🟢" if is_new_entry(item) else "🔴"
+                label = "\uc2e0\uaddc" if is_new_entry(item) else "\uc99d\uac00"
                 lines.append(
-                    f"- {label} {item.holding_name}({item.holding_code}) "
+                    f"- {marker} {label} {item.holding_name}({item.holding_code}) "
                     f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
                     f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
                 )
@@ -685,7 +748,7 @@ def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, lis
             for item in sells:
                 label = "\uc81c\uc678" if item.change_type == "REMOVED" else "\uac10\uc18c"
                 lines.append(
-                    f"- {label} {item.holding_name}({item.holding_code}) "
+                    f"- 🔵 {label} {item.holding_name}({item.holding_code}) "
                     f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
                     f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
                 )
@@ -733,6 +796,11 @@ def aggregate_amount_flows(changes_by_etf: dict[str, list[Change]]) -> tuple[lis
 
 def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
     buy_rows, sell_rows = aggregate_amount_flows(changes_by_etf)
+    new_entries = sorted(
+        [item for changes in changes_by_etf.values() for item in changes if is_new_entry(item)],
+        key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
+        reverse=True,
+    )
 
     def render_rows(rows: list[dict[str, Any]], side: str) -> str:
         if not rows:
@@ -746,6 +814,25 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
                 f"<td>{html_cell(row['holding_code'])}</td>"
                 f"<td class=\"num {side}\">{format_krw(row['amount'])}</td>"
                 f"<td class=\"num\">{len(row['etfs'])}</td>"
+                "</tr>"
+            )
+        return "\n".join(html_rows)
+
+    def render_new_entry_rows(items: list[Change]) -> str:
+        if not items:
+            return "<tr><td colspan=\"8\" class=\"empty\">\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
+        html_rows = []
+        for idx, item in enumerate(items, start=1):
+            html_rows.append(
+                "<tr>"
+                f"<td class=\"num\">{idx}</td>"
+                f"<td>{html_cell(item.etf_name)}</td>"
+                f"<td>{html_cell(item.etf_ticker)}</td>"
+                f"<td>{html_cell(item.holding_name)}</td>"
+                f"<td>{html_cell(item.holding_code)}</td>"
+                f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
+                f"<td class=\"num new\">{format_weight(item.current_weight)}</td>"
+                f"<td class=\"num new\">{format_krw(item.amount_delta)}</td>"
                 "</tr>"
             )
         return "\n".join(html_rows)
@@ -773,6 +860,13 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
             <tbody>{render_rows(sell_rows, 'sell')}</tbody>
           </table>
         </div>
+      </div>
+      <div class="new-entry-board">
+        <h3>\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc804\uccb4</h3>
+        <table>
+          <thead><tr><th>#</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
+          <tbody>{render_new_entry_rows(new_entries)}</tbody>
+        </table>
       </div>
     </section>
     """
@@ -807,16 +901,17 @@ def build_html_report(
         def render_rows(items: list[Change], side: str) -> str:
             rows: list[str] = []
             for item in items:
-                label = "\uc2e0\uaddc" if item.change_type == "ADDED" else "\uc81c\uc678" if item.change_type == "REMOVED" else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c")
+                label = "\uc2e0\uaddc" if is_new_entry(item) else "\uc81c\uc678" if item.change_type == "REMOVED" else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c")
+                row_side = "new" if is_new_entry(item) else side
                 rows.append(
                     "<tr>"
-                    f"<td class=\"type {side}\">{label}</td>"
+                    f"<td class=\"type {row_side}\">{label}</td>"
                     f"<td>{html_cell(item.holding_name)}</td>"
                     f"<td>{html_cell(item.holding_code)}</td>"
                     f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
                     f"<td class=\"num\">{format_weight(item.current_weight)}</td>"
-                    f"<td class=\"num delta {side}\">{format_delta(item.weight_delta)}</td>"
-                    f"<td class=\"num {side}\">{format_krw(item.amount_delta)}</td>"
+                    f"<td class=\"num delta {row_side}\">{format_delta(item.weight_delta)}</td>"
+                    f"<td class=\"num {row_side}\">{format_krw(item.amount_delta)}</td>"
                     "</tr>"
                 )
             return "\n".join(rows) if rows else "<tr><td colspan=\"7\" class=\"empty\">\ud574\ub2f9 \ubcc0\ud654 \uc5c6\uc74c</td></tr>"
@@ -894,9 +989,11 @@ def build_html_report(
     tr:hover td {{ background: #111821; }}
     .num {{ text-align: right; white-space: nowrap; font-family: Consolas, 'Courier New', monospace; }}
     .type {{ font-weight: 800; white-space: nowrap; font-family: Consolas, 'Courier New', monospace; }}
-    .buy {{ color: var(--green); }}
-    .sell {{ color: var(--red); }}
+    .buy {{ color: var(--red); }}
+    .sell {{ color: var(--cyan); }}
+    .new {{ color: var(--green); }}
     .empty {{ color: var(--muted); text-align: center; }}
+    .new-entry-board {{ margin-top: 16px; overflow-x: auto; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
     .muted {{ color: var(--muted); font-size: 13px; }}
     @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} .download-link {{ margin: 8px 0 0; }} }}
@@ -1017,6 +1114,7 @@ def run_collection(args: argparse.Namespace) -> int:
                 except Exception as exc:
                     skipped.append(f"{etf.name}({etf.ticker}): {exc}")
             save_changes(conn, run_id, all_changes)
+            save_new_entries(conn, run_id, all_changes)
             changes_by_etf: dict[str, list[Change]] = {}
             for change in all_changes:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)

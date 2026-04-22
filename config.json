@@ -16,5 +16,8 @@
   "public_pptx_url": "https://se2in.github.io/ETF_KRX/latest_changes.pptx",
   "skip_unready_pdf": true,
   "unready_cash_weight_threshold": 90.0,
-  "unready_removed_ratio_threshold": 0.6
+  "unready_removed_ratio_threshold": 0.6,
+  "unready_missing_weight_ratio_threshold": 0.5,
+  "unready_added_ratio_threshold": 0.1,
+  "unready_current_ratio_threshold": 0.7
 }

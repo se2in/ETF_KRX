@@ -39,6 +39,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "skip_unready_pdf": True,
     "unready_cash_weight_threshold": 90.0,
     "unready_removed_ratio_threshold": 0.6,
+    "unready_missing_weight_ratio_threshold": 0.5,
+    "unready_added_ratio_threshold": 0.1,
+    "unready_current_ratio_threshold": 0.7,
 }
 
 
@@ -47,6 +50,7 @@ class Etf:
     ticker: str
     name: str
     isin: str = ""
+    market_cap: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,9 @@ class Change:
     previous_weight: float | None
     current_weight: float | None
     weight_delta: float
+    previous_amount: float | None
+    current_amount: float | None
+    amount_delta: float
     change_type: str
 
 
@@ -224,6 +231,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             previous_weight REAL,
             current_weight REAL,
             weight_delta REAL NOT NULL,
+            previous_amount REAL,
+            current_amount REAL,
+            amount_delta REAL,
             change_type TEXT NOT NULL,
             created_at TEXT NOT NULL,
             PRIMARY KEY (run_id, etf_ticker, holding_code),
@@ -232,6 +242,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     ensure_column(conn, "etfs", "isin", "TEXT")
+    ensure_column(conn, "changes", "previous_amount", "REAL")
+    ensure_column(conn, "changes", "current_amount", "REAL")
+    ensure_column(conn, "changes", "amount_delta", "REAL")
     conn.commit()
 
 
@@ -274,6 +287,23 @@ class KrxClient:
         except Exception:
             return ""
 
+    def etf_market_caps(self, trade_date: str) -> dict[str, float]:
+        try:
+            import pykrx.website.krx.etx.core as etx_core
+
+            market_class = getattr(etx_core, "전종목시세_ETF")
+            df = market_class().fetch(trade_date)
+        except Exception:
+            return {}
+
+        caps: dict[str, float] = {}
+        for row in df.to_dict(orient="records"):
+            ticker = str(row.get("ISU_SRT_CD") or "").strip().zfill(6)
+            if ticker:
+                caps[ticker] = parse_number(row.get("MKTCAP")) or 0.0
+        return caps
+
+
     def discover_active_etfs(self, config: dict[str, Any], date: str | None) -> tuple[str, list[Etf]]:
         trade_date = self.nearest_trade_date(date)
         watchlist = {str(ticker).zfill(6) for ticker in config.get("watchlist", []) if str(ticker).strip()}
@@ -282,6 +312,7 @@ class KrxClient:
         if not include_keywords and not watchlist:
             include_keywords = ["액티브"]
 
+        market_caps = self.etf_market_caps(trade_date)
         etfs: list[Etf] = []
         for ticker in self.stock.get_etf_ticker_list(trade_date):
             ticker = str(ticker).zfill(6)
@@ -292,7 +323,7 @@ class KrxClient:
                 continue
             if exclude_keywords and any(keyword in name for keyword in exclude_keywords):
                 continue
-            etfs.append(Etf(ticker=ticker, name=name, isin=self.etf_isin(ticker)))
+            etfs.append(Etf(ticker=ticker, name=name, isin=self.etf_isin(ticker), market_cap=market_caps.get(ticker, 0.0)))
         return trade_date, sorted(etfs, key=lambda item: (item.name, item.ticker))
 
     def fetch_holdings(self, etf: Etf, date: str | None) -> tuple[str, list[Holding]]:
@@ -419,7 +450,7 @@ def previous_trade_date_in_db(conn: sqlite3.Connection, etf_ticker: str, trade_d
 
 def load_holdings_from_db(conn: sqlite3.Connection, etf_ticker: str, trade_date: str) -> dict[str, sqlite3.Row]:
     rows = conn.execute(
-        "SELECT holding_code, holding_name, weight FROM holdings WHERE etf_ticker = ? AND trade_date = ?",
+        "SELECT holding_code, holding_name, amount, weight FROM holdings WHERE etf_ticker = ? AND trade_date = ?",
         (etf_ticker, trade_date),
     ).fetchall()
     return {row["holding_code"]: row for row in rows}
@@ -431,7 +462,7 @@ def delete_holdings_for_date(conn: sqlite3.Connection, etf: Etf, trade_date: str
 
 
 def holding_compare_rows(holdings: list[Holding]) -> dict[str, dict[str, Any]]:
-    return {item.holding_code: {"holding_name": item.holding_name, "weight": item.weight} for item in holdings}
+    return {item.holding_code: {"holding_name": item.holding_name, "amount": item.amount, "weight": item.weight} for item in holdings}
 
 
 def row_holding_name(row: Any) -> str:
@@ -449,9 +480,17 @@ def row_weight(row: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def row_amount(row: Any) -> float | None:
+    try:
+        value = row["amount"]
+    except Exception:
+        return None
+    return None if value is None else float(value)
+
+
 def is_cash_holding(code: str, row: Any) -> bool:
     name = row_holding_name(row)
-    return code in {"010010", "CASH", "KRW"} or "현금" in name or "CASH" in name.upper()
+    return code in {"010010", "CASH", "KRW"} or "\ud604\uae08" in name or "CASH" in name.upper()
 
 
 def unready_pdf_reason(
@@ -465,29 +504,49 @@ def unready_pdf_reason(
     if len(previous) < 5 or not current:
         return None
 
+    previous_codes = set(previous)
+    current_codes = set(current)
+    removed_ratio = len(previous_codes - current_codes) / max(1, len(previous_codes))
+    added_ratio = len(current_codes - previous_codes) / max(1, len(previous_codes))
+    current_ratio = len(current_codes) / max(1, len(previous_codes))
+    missing_weight_ratio = len([row for row in current.values() if row_weight(row) is None]) / max(1, len(current_codes))
     cash_weight = sum((row_weight(row) or 0.0) for code, row in current.items() if is_cash_holding(code, row))
-    removed_ratio = len(set(previous) - set(current)) / max(1, len(previous))
-    current_ratio = len(current) / max(1, len(previous))
+
     cash_threshold = float(config.get("unready_cash_weight_threshold", 90.0))
     removed_threshold = float(config.get("unready_removed_ratio_threshold", 0.6))
+    missing_weight_threshold = float(config.get("unready_missing_weight_ratio_threshold", 0.5))
+    added_threshold = float(config.get("unready_added_ratio_threshold", 0.1))
+    current_ratio_threshold = float(config.get("unready_current_ratio_threshold", 0.7))
 
+    if missing_weight_ratio >= missing_weight_threshold:
+        return f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8 \uc758\uc2ec: \ud604\uc7ac PDF \ube44\uc911 \uac12 {missing_weight_ratio:.0%} \ub204\ub77d"
     if cash_weight >= cash_threshold and removed_ratio >= removed_threshold and current_ratio <= 0.5:
-        return (
-            f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8 \uc758\uc2ec: \uc6d0\ud654\ud604\uae08 {cash_weight:.2f}%, "
-            f"\uae30\uc874 \uc885\ubaa9 {removed_ratio:.0%} \ub204\ub77d"
-        )
+        return f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8 \uc758\uc2ec: \uc6d0\ud654\ud604\uae08 {cash_weight:.2f}%, \uae30\uc874 \uc885\ubaa9 {removed_ratio:.0%} \ub204\ub77d"
+    if removed_ratio >= removed_threshold and added_ratio <= added_threshold and current_ratio <= current_ratio_threshold:
+        return f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8 \uc758\uc2ec: \uae30\uc874 \uc885\ubaa9 {removed_ratio:.0%} \ub204\ub77d, \uc2e0\uaddc \uc885\ubaa9 {added_ratio:.0%}"
     return None
 
 
-
-def compare_holdings(etf: Etf, trade_date: str, previous: dict[str, sqlite3.Row], current: dict[str, sqlite3.Row], min_delta: float) -> list[Change]:
+def compare_holdings(etf: Etf, trade_date: str, previous: dict[str, Any], current: dict[str, Any], min_delta: float) -> list[Change]:
     changes: list[Change] = []
     for code in set(previous) | set(current):
         prev = previous.get(code)
         curr = current.get(code)
-        prev_weight = prev["weight"] if prev else None
-        curr_weight = curr["weight"] if curr else None
+        prev_weight_raw = row_weight(prev) if prev else None
+        curr_weight_raw = row_weight(curr) if curr else None
+        prev_amount_raw = row_amount(prev) if prev else None
+        curr_amount_raw = row_amount(curr) if curr else None
+
+        if prev and curr and (prev_weight_raw is None or curr_weight_raw is None):
+            continue
+
+        prev_weight = 0.0 if prev is None else prev_weight_raw
+        curr_weight = 0.0 if curr is None else curr_weight_raw
+        prev_amount = 0.0 if prev is None else prev_amount_raw
+        curr_amount = 0.0 if curr is None else curr_amount_raw
         delta = round(float(curr_weight or 0.0) - float(prev_weight or 0.0), 6)
+        amount_delta = round(float(curr_amount or 0.0) - float(prev_amount or 0.0), 2)
+
         if prev is None:
             change_type = "ADDED"
         elif curr is None:
@@ -506,6 +565,9 @@ def compare_holdings(etf: Etf, trade_date: str, previous: dict[str, sqlite3.Row]
                 previous_weight=prev_weight,
                 current_weight=curr_weight,
                 weight_delta=delta,
+                previous_amount=prev_amount,
+                current_amount=curr_amount,
+                amount_delta=amount_delta,
                 change_type=change_type,
             )
         )
@@ -531,8 +593,10 @@ def save_changes(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -
         """
         INSERT OR REPLACE INTO changes (
             run_id, trade_date, etf_ticker, holding_code, holding_name,
-            previous_weight, current_weight, weight_delta, change_type, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            previous_weight, current_weight, weight_delta,
+            previous_amount, current_amount, amount_delta,
+            change_type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -544,6 +608,9 @@ def save_changes(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -
                 item.previous_weight,
                 item.current_weight,
                 item.weight_delta,
+                item.previous_amount,
+                item.current_amount,
+                item.amount_delta,
                 item.change_type,
                 now,
             )
@@ -562,81 +629,153 @@ def format_delta(value: float) -> str:
     return f"{sign}{value:.2f}pp"
 
 
-def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, list[Change]], skipped: list[str], config: dict[str, Any]) -> str:
-    pretty_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
-    changed_etfs = [etf for etf in etfs if changes_by_etf.get(etf.ticker)]
-    buy_limit = int(config.get("max_buy_per_etf", 10))
-    sell_limit = int(config.get("max_sell_per_etf", 10))
-    max_etfs = int(config.get("max_etfs_in_telegram", 9999))
+def format_krw(value: float | None) -> str:
+    if value is None:
+        return "-"
+    amount = abs(float(value))
+    if amount >= 100_000_000:
+        return f"{amount / 100_000_000:.1f}\uc5b5\uc6d0"
+    if amount >= 10_000:
+        return f"{amount / 10_000:.0f}\ub9cc\uc6d0"
+    return f"{amount:,.0f}\uc6d0"
 
-    total_buy = 0
-    total_sell = 0
-    for changes in changes_by_etf.values():
-        total_buy += len([item for item in changes if item.weight_delta > 0])
-        total_sell += len([item for item in changes if item.weight_delta < 0])
+
+def top_market_cap_etfs(etfs: list[Etf], limit: int = 10) -> list[Etf]:
+    return sorted(etfs, key=lambda item: float(item.market_cap or 0.0), reverse=True)[:limit]
+
+
+def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, list[Change]], skipped: list[str], config: dict[str, Any]) -> str:
+    generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    top_etfs = top_market_cap_etfs(etfs, 10)
+    separator = "-" * 91
 
     lines = [
-        f"[KRX 액티브 ETF PDF 변화] {pretty_date}",
-        f"대상 ETF: {len(etfs)}개 / 변화 ETF: {len(changed_etfs)}개",
-        f"매수/비중증가: {total_buy}건 / 매도/비중감소: {total_sell}건",
-        f"기준: 비중 변화 {config.get('min_weight_delta_pp', 0.05)}pp 이상, 신규/제외 종목 포함",
-        f"표시: ETF별 매수 최대 {buy_limit}개, 매도 최대 {sell_limit}개",
+        f"\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubaa8\ub2c8\ud130\ub9c1 ({generated_at})",
+        "",
+        separator,
+        "",
+        "\uc561\ud2f0\ube0c ETF\uc758 \uc2dc\uac00\ucd1d\uc561 \uc0c1\uc704 10\uac1c\uc758 \ub9e4\uc218/\ub9e4\ub3c4 \uc804\uc885\ubaa9",
+        "",
+        separator,
     ]
 
-    if skipped:
-        lines.append(f"수집 실패/데이터 없음: {len(skipped)}개")
-        for item in skipped[:10]:
-            lines.append(f"- {item}")
-        if len(skipped) > 10:
-            lines.append(f"...외 {len(skipped) - 10}개")
-
-    for etf in changed_etfs[:max_etfs]:
-        changes = changes_by_etf[etf.ticker]
+    for rank, etf in enumerate(top_etfs, start=1):
+        changes = changes_by_etf.get(etf.ticker, [])
         buys = sorted([item for item in changes if item.weight_delta > 0], key=lambda item: item.weight_delta, reverse=True)
         sells = sorted([item for item in changes if item.weight_delta < 0], key=lambda item: item.weight_delta)
 
         lines.append("")
-        lines.append(f"{etf.name} ({etf.ticker})")
-        lines.append(f"매수/증가 {len(buys)}건, 매도/감소 {len(sells)}건")
+        lines.append(f"{rank}. {etf.name} ({etf.ticker}) / \uc2dc\uac00\ucd1d\uc561 {format_krw(etf.market_cap)}")
+        lines.append(f"\ub9e4\uc218/\uc99d\uac00 {len(buys)}\uac74, \ub9e4\ub3c4/\uac10\uc18c {len(sells)}\uac74")
 
         if buys:
-            lines.append(f"[매수/비중증가 상위 {min(len(buys), buy_limit)}개]")
-            for item in buys[:buy_limit]:
-                label = "신규" if item.change_type == "ADDED" else "증가"
+            lines.append("[\ub9e4\uc218/\ube44\uc911\uc99d\uac00 \uc804\uc885\ubaa9]")
+            for item in buys:
+                label = "\uc2e0\uaddc" if item.change_type == "ADDED" else "\uc99d\uac00"
                 lines.append(
                     f"- {label} {item.holding_name}({item.holding_code}) "
                     f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
-                    f"({format_delta(item.weight_delta)})"
+                    f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
                 )
         else:
-            lines.append("[매수/비중증가 없음]")
+            lines.append("[\ub9e4\uc218/\ube44\uc911\uc99d\uac00 \uc5c6\uc74c]")
 
         if sells:
-            lines.append(f"[매도/비중감소 상위 {min(len(sells), sell_limit)}개]")
-            for item in sells[:sell_limit]:
-                label = "제외" if item.change_type == "REMOVED" else "감소"
+            lines.append("[\ub9e4\ub3c4/\ube44\uc911\uac10\uc18c \uc804\uc885\ubaa9]")
+            for item in sells:
+                label = "\uc81c\uc678" if item.change_type == "REMOVED" else "\uac10\uc18c"
                 lines.append(
                     f"- {label} {item.holding_name}({item.holding_code}) "
                     f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
-                    f"({format_delta(item.weight_delta)})"
+                    f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
                 )
         else:
-            lines.append("[매도/비중감소 없음]")
+            lines.append("[\ub9e4\ub3c4/\ube44\uc911\uac10\uc18c \uc5c6\uc74c]")
 
-        hidden_buy = max(0, len(buys) - buy_limit)
-        hidden_sell = max(0, len(sells) - sell_limit)
-        if hidden_buy or hidden_sell:
-            lines.append(f"...추가 변화: 매수 {hidden_buy}건, 매도 {hidden_sell}건은 DB에 저장됨")
+    if skipped:
+        lines.append("")
+        lines.append(separator)
+        lines.append(f"PDF \ubbf8\uc5c5\ub370\uc774\ud2b8/\ub370\uc774\ud130 \uc5c6\uc74c: {len(skipped)}\uac1c")
+        for item in skipped[:15]:
+            lines.append(f"- {item}")
+        if len(skipped) > 15:
+            lines.append(f"...\uc678 {len(skipped) - 15}\uac1c")
 
-    if len(changed_etfs) > max_etfs:
-        lines.append(f"\n...외 {len(changed_etfs) - max_etfs}개 ETF 변화는 DB에 저장됨")
-    if not changed_etfs:
-        lines.append("\n감지된 비중 변화가 없습니다.")
+    if not any(changes_by_etf.get(etf.ticker) for etf in top_etfs):
+        lines.append("")
+        lines.append("\uc2dc\uac00\ucd1d\uc561 \uc0c1\uc704 10\uac1c \uc561\ud2f0\ube0c ETF\uc5d0\uc11c \uac10\uc9c0\ub41c \ube44\uc911 \ubcc0\ud654\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.")
     return "\n".join(lines)
 
 def html_cell(value: Any) -> str:
     return html.escape("" if value is None else str(value))
 
+
+
+def aggregate_amount_flows(changes_by_etf: dict[str, list[Change]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    buys: dict[str, dict[str, Any]] = {}
+    sells: dict[str, dict[str, Any]] = {}
+    for changes in changes_by_etf.values():
+        for item in changes:
+            if item.amount_delta == 0:
+                continue
+            target = buys if item.amount_delta > 0 else sells
+            key = item.holding_code or item.holding_name
+            row = target.setdefault(
+                key,
+                {"holding_code": item.holding_code, "holding_name": item.holding_name, "amount": 0.0, "etfs": set()},
+            )
+            row["amount"] += abs(float(item.amount_delta or 0.0))
+            row["etfs"].add(item.etf_ticker)
+    buy_rows = sorted(buys.values(), key=lambda row: row["amount"], reverse=True)[:20]
+    sell_rows = sorted(sells.values(), key=lambda row: row["amount"], reverse=True)[:20]
+    return buy_rows, sell_rows
+
+
+def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
+    buy_rows, sell_rows = aggregate_amount_flows(changes_by_etf)
+
+    def render_rows(rows: list[dict[str, Any]], side: str) -> str:
+        if not rows:
+            return "<tr><td colspan=\"5\" class=\"empty\">\ud574\ub2f9 \ubcc0\ud654 \uc5c6\uc74c</td></tr>"
+        html_rows = []
+        for idx, row in enumerate(rows, start=1):
+            html_rows.append(
+                "<tr>"
+                f"<td class=\"num\">{idx}</td>"
+                f"<td>{html_cell(row['holding_name'])}</td>"
+                f"<td>{html_cell(row['holding_code'])}</td>"
+                f"<td class=\"num {side}\">{format_krw(row['amount'])}</td>"
+                f"<td class=\"num\">{len(row['etfs'])}</td>"
+                "</tr>"
+            )
+        return "\n".join(html_rows)
+
+    return f"""
+    <section class="etf-card flow-board">
+      <div class="etf-head">
+        <div>
+          <h2>\uc885\ubaa9\ubcc4 \ud569\uc0b0 \ub9e4\uc218/\ub9e4\ub3c4 \uae08\uc561 TOP 20</h2>
+          <p>\uac01 ETF PDF\uc758 \ud3c9\uac00\uae08\uc561 \ubcc0\ud654\ub97c \uc885\ubaa9\ubcc4\ub85c \ud569\uc0b0\ud55c \uac12\uc785\ub2c8\ub2e4.</p>
+        </div>
+      </div>
+      <div class="tables">
+        <div>
+          <h3>\ud569\uc0b0 \ub9e4\uc218 \uae08\uc561 TOP 20</h3>
+          <table>
+            <thead><tr><th>#</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\ud569\uc0b0\uae08\uc561</th><th>ETF\uc218</th></tr></thead>
+            <tbody>{render_rows(buy_rows, 'buy')}</tbody>
+          </table>
+        </div>
+        <div>
+          <h3>\ud569\uc0b0 \ub9e4\ub3c4 \uae08\uc561 TOP 20</h3>
+          <table>
+            <thead><tr><th>#</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\ud569\uc0b0\uae08\uc561</th><th>ETF\uc218</th></tr></thead>
+            <tbody>{render_rows(sell_rows, 'sell')}</tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    """
 
 def build_html_report(
     trade_date: str,
@@ -652,6 +791,7 @@ def build_html_report(
     total_buy = sum(len([item for item in changes if item.weight_delta > 0]) for changes in changes_by_etf.values())
     total_sell = sum(len([item for item in changes if item.weight_delta < 0]) for changes in changes_by_etf.values())
     pptx_url = html_cell(str(config.get("public_pptx_url", "latest_changes.pptx")))
+    flow_html = render_amount_flow_html(changes_by_etf)
 
     latest_path = Path(str(config.get("html_report_path", "reports/latest_changes.html")))
     latest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -676,9 +816,10 @@ def build_html_report(
                     f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
                     f"<td class=\"num\">{format_weight(item.current_weight)}</td>"
                     f"<td class=\"num delta {side}\">{format_delta(item.weight_delta)}</td>"
+                    f"<td class=\"num {side}\">{format_krw(item.amount_delta)}</td>"
                     "</tr>"
                 )
-            return "\n".join(rows) if rows else "<tr><td colspan=\"6\" class=\"empty\">\ud574\ub2f9 \ubcc0\ud654 \uc5c6\uc74c</td></tr>"
+            return "\n".join(rows) if rows else "<tr><td colspan=\"7\" class=\"empty\">\ud574\ub2f9 \ubcc0\ud654 \uc5c6\uc74c</td></tr>"
 
         sections.append(
             f"""
@@ -693,14 +834,14 @@ def build_html_report(
                 <div>
                   <h3>\ub9e4\uc218/\ube44\uc911\uc99d\uac00 \uc804\uccb4</h3>
                   <table>
-                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
+                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
                     <tbody>{render_rows(buys, 'buy')}</tbody>
                   </table>
                 </div>
                 <div>
                   <h3>\ub9e4\ub3c4/\ube44\uc911\uac10\uc18c \uc804\uccb4</h3>
                   <table>
-                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
+                    <thead><tr><th>\uad6c\ubd84</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
                     <tbody>{render_rows(sells, 'sell')}</tbody>
                   </table>
                 </div>
@@ -777,6 +918,7 @@ def build_html_report(
   </div>
   <div class="tools"><input id="search" placeholder="ETF\uba85, ETF\ucf54\ub4dc, \uc885\ubaa9\uba85, \uc885\ubaa9\ucf54\ub4dc \uac80\uc0c9"></div>
   <p class="muted">\ud154\ub808\uadf8\ub7a8\uc740 \uc694\uc57d\ub9cc \ubcf4\ub0b4\uace0, \uc774 HTML\uc5d0\ub294 \uac10\uc9c0\ub41c \ubaa8\ub4e0 \ubcc0\ud654\uac00 \ud45c\uc2dc\ub429\ub2c8\ub2e4. <a class="download-link" href="{pptx_url}">PPTX \ubcf4\uace0\uc11c \ub2e4\uc6b4\ub85c\ub4dc</a></p>
+  {flow_html}
   {skipped_html}
   {no_change_html}
   {body}
@@ -883,7 +1025,7 @@ def run_collection(args: argparse.Namespace) -> int:
             pptx_path = build_pptx_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
             public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
             public_pptx_url = str(config.get("public_pptx_url", "https://se2in.github.io/ETF_KRX/latest_changes.pptx")).strip()
-            report = f"{report}\n\n?? HTML ???: {public_report_url}\nPPTX ???: {public_pptx_url}"
+            report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\nPPTX \ubcf4\uace0\uc11c: {public_pptx_url}"
             finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; pptx={pptx_path}")
         except Exception as exc:
             finish_run(conn, run_id, "FAILED", str(exc))

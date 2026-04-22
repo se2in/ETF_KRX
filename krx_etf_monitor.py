@@ -826,8 +826,23 @@ def aggregate_amount_flows(changes_by_etf: dict[str, list[Change]]) -> tuple[lis
 
 def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
     buy_rows, sell_rows = aggregate_amount_flows(changes_by_etf)
+    all_changes = [item for changes in changes_by_etf.values() for item in changes]
+    buy_changes = [item for item in all_changes if item.weight_delta > 0]
+    sell_changes = [item for item in all_changes if item.weight_delta < 0]
+    buy_average = sum(item.weight_delta for item in buy_changes) / len(buy_changes) if buy_changes else 0.0
+    sell_average = sum(abs(item.weight_delta) for item in sell_changes) / len(sell_changes) if sell_changes else 0.0
+    above_average_buys = sorted(
+        [item for item in buy_changes if item.weight_delta >= buy_average],
+        key=lambda item: item.weight_delta,
+        reverse=True,
+    )
+    above_average_sells = sorted(
+        [item for item in sell_changes if abs(item.weight_delta) >= sell_average],
+        key=lambda item: abs(item.weight_delta),
+        reverse=True,
+    )
     new_entries = sorted(
-        [item for changes in changes_by_etf.values() for item in changes if is_new_entry(item)],
+        [item for item in all_changes if is_new_entry(item)],
         key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
         reverse=True,
     )
@@ -844,6 +859,28 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
                 f"<td>{html_cell(row['holding_code'])}</td>"
                 f"<td class=\"num {side}\">{format_krw(row['amount'])}</td>"
                 f"<td class=\"num\">{len(row['etfs'])}</td>"
+                "</tr>"
+            )
+        return "\n".join(html_rows)
+
+    def render_average_change_rows(items: list[Change], side: str) -> str:
+        if not items:
+            return "<tr><td colspan=\"9\" class=\"empty\">\ud3c9\uade0 \uc774\uc0c1 \ube44\uc911 \ubcc0\ud654 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
+        html_rows = []
+        for idx, item in enumerate(items, start=1):
+            label = "\uc2e0\uaddc" if is_new_entry(item) else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c")
+            row_side = "new" if is_new_entry(item) else side
+            html_rows.append(
+                "<tr>"
+                f"<td class=\"num\">{idx}</td>"
+                f"<td class=\"type {row_side}\">{label}</td>"
+                f"<td>{html_cell(item.etf_name)}</td>"
+                f"<td>{html_cell(item.etf_ticker)}</td>"
+                f"<td>{html_cell(item.holding_name)}</td>"
+                f"<td>{html_cell(item.holding_code)}</td>"
+                f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
+                f"<td class=\"num\">{format_weight(item.current_weight)}</td>"
+                f"<td class=\"num {row_side}\">{format_delta(item.weight_delta)}</td>"
                 "</tr>"
             )
         return "\n".join(html_rows)
@@ -897,6 +934,26 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
           <thead><tr><th>#</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
           <tbody>{render_new_entry_rows(new_entries)}</tbody>
         </table>
+      </div>
+      <div class="average-change-board">
+        <h3>\ud3c9\uade0 \uc774\uc0c1 \ube44\uc911 \ubcc0\ud654 \uc885\ubaa9</h3>
+        <p>\ub9e4\uc218 \ud3c9\uade0 {format_delta(buy_average)} \uc774\uc0c1, \ub9e4\ub3c4 \ud3c9\uade0 -{sell_average:.2f}pp \uc774\uc0c1\uc758 \ubcc0\ud654\ub9cc \ub530\ub85c \ubaa8\uc558\uc2b5\ub2c8\ub2e4.</p>
+        <div class="tables">
+          <div>
+            <h3>\ub9e4\uc218/\uc99d\uac00 \ud3c9\uade0 \uc774\uc0c1</h3>
+            <table>
+              <thead><tr><th>#</th><th>\uad6c\ubd84</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
+              <tbody>{render_average_change_rows(above_average_buys, 'buy')}</tbody>
+            </table>
+          </div>
+          <div>
+            <h3>\ub9e4\ub3c4/\uac10\uc18c \ud3c9\uade0 \uc774\uc0c1</h3>
+            <table>
+              <thead><tr><th>#</th><th>\uad6c\ubd84</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac</th><th>\ubcc0\ud654</th></tr></thead>
+              <tbody>{render_average_change_rows(above_average_sells, 'sell')}</tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
     """
@@ -1024,6 +1081,7 @@ def build_html_report(
     .new {{ color: var(--green); }}
     .empty {{ color: var(--muted); text-align: center; }}
     .new-entry-board {{ margin-top: 16px; overflow-x: auto; }}
+    .average-change-board {{ margin-top: 16px; overflow-x: auto; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
     .muted {{ color: var(--muted); font-size: 13px; }}
     @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} .download-link {{ margin: 8px 0 0; }} }}

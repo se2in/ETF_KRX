@@ -32,7 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "database_path": "data/krx_active_etf_holdings.sqlite",
     "watchlist": [],
     "include_keywords": ["액티브"],
-    "exclude_keywords": ["금리", "회사채", "채권", "머니마켓", "비타", "유니콘"],
+    "exclude_keywords": ["금리", "국채", "금융채", "회사채", "채권", "머니마켓", "비타", "유니콘"],
     "min_weight_delta_pp": 0.05,
     "max_etfs_in_telegram": 9999,
     "max_changes_per_etf": 10,
@@ -706,9 +706,19 @@ def top_market_cap_etfs(etfs: list[Etf], limit: int = 10) -> list[Etf]:
     return sorted(etfs, key=lambda item: float(item.market_cap or 0.0), reverse=True)[:limit]
 
 
+def top_new_entries(changes_by_etf: dict[str, list[Change]], limit: int = 10) -> list[Change]:
+    entries = [item for changes in changes_by_etf.values() for item in changes if is_new_entry(item)]
+    return sorted(
+        entries,
+        key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
+        reverse=True,
+    )[:limit]
+
+
 def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, list[Change]], skipped: list[str], config: dict[str, Any]) -> str:
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     top_etfs = top_market_cap_etfs(etfs, 10)
+    new_entry_top10 = top_new_entries(changes_by_etf, 10)
     separator = "-" * 91
 
     lines = [
@@ -716,10 +726,30 @@ def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, lis
         "",
         separator,
         "",
+        "\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc0c1\uc704 10\uac1c",
+    ]
+
+    if new_entry_top10:
+        for rank, item in enumerate(new_entry_top10, start=1):
+            lines.append(
+                f"{rank}. 🟢 {item.holding_name}({item.holding_code}) / "
+                f"{item.etf_name}({item.etf_ticker}) "
+                f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
+                f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
+            )
+    else:
+        lines.append("\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9\uc774 \uc5c6\uc2b5\ub2c8\ub2e4.")
+
+    lines.extend(
+        [
+            "",
+            separator,
+            "",
         "\uc561\ud2f0\ube0c ETF\uc758 \uc2dc\uac00\ucd1d\uc561 \uc0c1\uc704 10\uac1c\uc758 \ub9e4\uc218/\ub9e4\ub3c4 \uc804\uc885\ubaa9",
         "",
         separator,
-    ]
+        ]
+    )
 
     for rank, etf in enumerate(top_etfs, start=1):
         changes = changes_by_etf.get(etf.ticker, [])

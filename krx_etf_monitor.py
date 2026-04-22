@@ -235,6 +235,11 @@ def init_db(conn: sqlite3.Connection) -> None:
 class KrxClient:
     def __init__(self) -> None:
         self.stock = get_pykrx_stock()
+        from pykrx.website.krx import get_etx_isin
+        from pykrx.website.krx.etx.core import PDF
+
+        self.get_etx_isin = get_etx_isin
+        self.pdf = PDF()
 
     def nearest_trade_date(self, date: str | None) -> str:
         current = datetime.strptime(normalize_date(date), "%Y%m%d")
@@ -256,7 +261,13 @@ class KrxClient:
 
     def etf_isin(self, ticker: str) -> str:
         try:
-            return str(self.stock.get_etf_isin(ticker))
+            isin = str(self.stock.get_etf_isin(ticker))
+            if isin:
+                return isin
+        except Exception:
+            pass
+        try:
+            return str(self.get_etx_isin(ticker))
         except Exception:
             return ""
 
@@ -283,26 +294,39 @@ class KrxClient:
 
     def fetch_holdings(self, etf: Etf, date: str | None) -> tuple[str, list[Holding]]:
         trade_date = self.nearest_trade_date(date)
-        df = self.stock.get_etf_portfolio_deposit_file(etf.ticker, trade_date)
+        isin = etf.isin or self.etf_isin(etf.ticker)
+        if not isin:
+            return trade_date, []
+
+        # pykrx's public helper currently prints noisy errors for KRX rows with no
+        # PDF output. Reading the raw KRX PDF endpoint lets us handle empty tables
+        # quietly and parse both old and new column layouts.
+        df = self.pdf.fetch(trade_date, isin)
         if df is None or df.empty:
             return trade_date, []
-        records = df.reset_index().to_dict(orient="records")
-        columns = [str(col) for col in df.reset_index().columns]
+
+        frame = df.reset_index() if getattr(df, "index", None) is not None and df.index.name else df.copy()
+        records = frame.to_dict(orient="records")
+        columns = [str(col) for col in frame.columns]
         rows: list[Holding] = []
         seen_codes: set[str] = set()
         for idx, row in enumerate(records, start=1):
             raw = {str(k): v for k, v in row.items()}
             values_by_pos = [raw.get(col) for col in columns]
-            code = first_value(raw, ["티커", "종목코드", "COMPST_ISU_CD", "index"])
-            name = first_value(raw, ["구성종목명", "종목명", "COMPST_ISU_NM"])
-            quantity = first_value(raw, ["계약수", "수량", "COMPST_ISU_CU1_SHRS"])
-            amount = first_value(raw, ["금액", "평가금액", "VALU_AMT"])
-            weight = first_value(raw, ["비중", "비중(%)", "COMPST_RTO"])
+            code = first_value(raw, ["\ud2f0\ucee4", "\uc885\ubaa9\ucf54\ub4dc", "COMPST_ISU_CD", "COMPST_ISU_CD2", "ISU_CD", "index"])
+            name = first_value(raw, ["\uad6c\uc131\uc885\ubaa9\uba85", "\uc885\ubaa9\uba85", "COMPST_ISU_NM", "ISU_NM", "KOR_ISU_NM"])
+            quantity = first_value(raw, ["\uacc4\uc57d\uc218", "\uc218\ub7c9", "COMPST_ISU_CU1_SHRS", "CU1_SHRS", "SHRS"])
+            amount = first_value(raw, ["\uae08\uc561", "\ud3c9\uac00\uae08\uc561", "VALU_AMT", "EVAL_AMT"])
+            weight = first_value(raw, ["\ube44\uc911", "\ube44\uc911(%)", "COMPST_RTO", "RTO", "WEIGHT"])
 
             if code is None and values_by_pos:
                 code = values_by_pos[0]
-            if name is None and len(values_by_pos) > 1:
-                name = values_by_pos[1]
+            if name is None:
+                for value in values_by_pos:
+                    text = str(value or "").strip()
+                    if text and not text.startswith("KR") and not text.replace(",", "").replace(".", "").replace("-", "").isdigit():
+                        name = value
+                        break
             if quantity is None and len(values_by_pos) > 2:
                 quantity = values_by_pos[2]
             if amount is None and len(values_by_pos) > 3:
@@ -329,7 +353,6 @@ class KrxClient:
                 )
             )
         return trade_date, rows
-
 
 def first_value(row: dict[str, Any], candidates: list[str]) -> Any:
     for key in candidates:
@@ -682,7 +705,7 @@ def build_html_report(
 </head>
 <body>
 <header>
-  <div class="topline"><span class="ticker-dot"></span> YUJIN SECURITIES | ACTIVE ETF MONITOR</div>
+  <div class="topline"><span class="ticker-dot"></span> EUGENE SECURITIES | ACTIVE ETF MONITOR</div>
   <h1>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</h1>
   <p>{pretty_date} \uae30\uc900 | \uc0dd\uc131 {generated_at} | KRX PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654</p>
 </header>

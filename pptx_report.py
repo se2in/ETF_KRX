@@ -150,7 +150,7 @@ def build_pptx_report(trade_date: str, etfs: list[Any], changes_by_etf: dict[str
 
     slide = Slide()
     headline = "\uc624\ub298 ETF \uc790\uae08\uc758 \ud754\uc801, \uc5ec\uae30\uc11c \uac08\ub838\uc2b5\ub2c8\ub2e4" if total_changes else "\uc624\ub298\uc740 \ud070 \uc190\uc758 \ud754\uc801\uc774 \uc870\uc6a9\ud588\uc2b5\ub2c8\ub2e4"
-    add_header(slide, "YUJIN SECURITIES | ACTIVE ETF RADAR", headline, f"{pretty_date} KRX PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654 \uc694\uc57d")
+    add_header(slide, "EUGENE SECURITIES | ACTIVE ETF RADAR", headline, f"{pretty_date} KRX PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654 \uc694\uc57d")
     metric(slide, 48, 190, "\ub300\uc0c1 ETF", str(len(etfs)))
     metric(slide, 292, 190, "\ubcc0\ud654 ETF", str(len(changed_etfs)), "3DD6E8")
     metric(slide, 536, 190, "\uc804\uccb4 \ubcc0\ud654", str(total_changes))

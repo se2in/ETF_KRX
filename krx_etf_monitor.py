@@ -791,13 +791,8 @@ def save_daily_new_entries(conn: sqlite3.Connection, run_id: int, trade_date: st
 
 
 def save_strong_candidat_entries(conn: sqlite3.Connection, run_id: int, trade_date: str, changes: list[Change]) -> None:
-    buy_average, _, above_average_buys, _ = above_average_change_sets(changes)
-    above_buy_keys = {(item.etf_ticker, item.holding_code) for item in above_average_buys}
-    entries = [
-        item
-        for item in changes
-        if is_new_entry(item) and (item.etf_ticker, item.holding_code) in above_buy_keys
-    ]
+    buy_average, _, _, _ = above_average_change_sets(changes)
+    entries = strong_candidate_changes(changes)
     now = datetime.now(KST).isoformat(timespec="seconds")
     conn.execute("DELETE FROM strong_candidat_entries WHERE trade_date = ?", (trade_date,))
     if entries:
@@ -905,6 +900,26 @@ def top_new_entries(changes_by_etf: dict[str, list[Change]], limit: int = 10) ->
         key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
         reverse=True,
     )[:limit]
+
+
+def is_cash_change(change: Change) -> bool:
+    name = change.holding_name or ""
+    code = change.holding_code or ""
+    return code in {"010010", "CASH", "KRW"} or "\ud604\uae08" in name or "CASH" in name.upper()
+
+
+def strong_candidate_changes(changes: list[Change]) -> list[Change]:
+    _, _, above_average_buys, _ = above_average_change_sets(changes)
+    above_buy_keys = {(item.etf_ticker, item.holding_code) for item in above_average_buys}
+    return sorted(
+        [
+            item
+            for item in changes
+            if is_new_entry(item) and not is_cash_change(item) and (item.etf_ticker, item.holding_code) in above_buy_keys
+        ],
+        key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
+        reverse=True,
+    )
 
 
 def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, list[Change]], skipped: list[str], config: dict[str, Any]) -> str:
@@ -1020,6 +1035,8 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
     buy_rows, sell_rows = aggregate_amount_flows(changes_by_etf)
     all_changes = [item for changes in changes_by_etf.values() for item in changes]
     buy_average, sell_average, above_average_buys, above_average_sells = above_average_change_sets(all_changes)
+    strong_candidates = strong_candidate_changes(all_changes)
+    strong_keys = {(item.etf_ticker, item.holding_code) for item in strong_candidates}
     new_entries = sorted(
         [item for item in all_changes if is_new_entry(item)],
         key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
@@ -1047,10 +1064,11 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
             return "<tr><td colspan=\"9\" class=\"empty\">\ud3c9\uade0 \uc774\uc0c1 \ube44\uc911 \ubcc0\ud654 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
         html_rows = []
         for idx, item in enumerate(items, start=1):
-            label = "\uc2e0\uaddc" if is_new_entry(item) else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c")
-            row_side = "new" if is_new_entry(item) else side
+            is_strong = (item.etf_ticker, item.holding_code) in strong_keys
+            label = "\uac15\ud55c \ud6c4\ubcf4" if is_strong else ("\uc2e0\uaddc" if is_new_entry(item) else ("\uc99d\uac00" if item.weight_delta > 0 else "\uac10\uc18c"))
+            row_side = "strong" if is_strong else ("new" if is_new_entry(item) else side)
             html_rows.append(
-                "<tr>"
+                f"<tr class=\"{'strong-row' if is_strong else ''}\">"
                 f"<td class=\"num\">{idx}</td>"
                 f"<td class=\"type {row_side}\">{label}</td>"
                 f"<td>{html_cell(item.etf_name)}</td>"
@@ -1069,16 +1087,37 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
             return "<tr><td colspan=\"8\" class=\"empty\">\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
         html_rows = []
         for idx, item in enumerate(items, start=1):
+            is_strong = (item.etf_ticker, item.holding_code) in strong_keys
             html_rows.append(
-                "<tr>"
+                f"<tr class=\"{'strong-row' if is_strong else ''}\">"
                 f"<td class=\"num\">{idx}</td>"
                 f"<td>{html_cell(item.etf_name)}</td>"
                 f"<td>{html_cell(item.etf_ticker)}</td>"
                 f"<td>{html_cell(item.holding_name)}</td>"
                 f"<td>{html_cell(item.holding_code)}</td>"
                 f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
-                f"<td class=\"num new\">{format_weight(item.current_weight)}</td>"
-                f"<td class=\"num new\">{format_krw(item.amount_delta)}</td>"
+                f"<td class=\"num {'strong' if is_strong else 'new'}\">{format_weight(item.current_weight)}</td>"
+                f"<td class=\"num {'strong' if is_strong else 'new'}\">{format_krw(item.amount_delta)}</td>"
+                "</tr>"
+            )
+        return "\n".join(html_rows)
+
+    def render_strong_candidate_rows(items: list[Change]) -> str:
+        if not items:
+            return "<tr><td colspan=\"9\" class=\"empty\">\uac15\ud55c \ud6c4\ubcf4 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
+        html_rows = []
+        for idx, item in enumerate(items, start=1):
+            html_rows.append(
+                "<tr class=\"strong-row\">"
+                f"<td class=\"num\">{idx}</td>"
+                f"<td class=\"type strong\">\uac15\ud55c \ud6c4\ubcf4</td>"
+                f"<td>{html_cell(item.etf_name)}</td>"
+                f"<td>{html_cell(item.etf_ticker)}</td>"
+                f"<td>{html_cell(item.holding_name)}</td>"
+                f"<td>{html_cell(item.holding_code)}</td>"
+                f"<td class=\"num\">{format_weight(item.previous_weight)}</td>"
+                f"<td class=\"num strong\">{format_weight(item.current_weight)}</td>"
+                f"<td class=\"num strong\">{format_krw(item.amount_delta)}</td>"
                 "</tr>"
             )
         return "\n".join(html_rows)
@@ -1112,6 +1151,14 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
         <table>
           <thead><tr><th>#</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
           <tbody>{render_new_entry_rows(new_entries)}</tbody>
+        </table>
+      </div>
+      <div class="strong-candidate-board">
+        <h3>\uac15\ud55c \ud6c4\ubcf4 \uc885\ubaa9</h3>
+        <p>\uc2e0\uaddc \ud3b8\uc785\uc774\uba74\uc11c \ub9e4\uc218/\uc99d\uac00 \ud3c9\uade0 \uc774\uc0c1\uc778 \uc885\ubaa9\uc744 \uae08\uc0c9\uc73c\ub85c \ud45c\uc2dc\ud569\ub2c8\ub2e4.</p>
+        <table>
+          <thead><tr><th>#</th><th>\uad6c\ubd84</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
+          <tbody>{render_strong_candidate_rows(strong_candidates)}</tbody>
         </table>
       </div>
       <div class="average-change-board">
@@ -1163,9 +1210,10 @@ def build_image_report(
     total_sell = len([item for item in all_changes if item.weight_delta < 0])
     buy_average, sell_average, above_buys, above_sells = above_average_change_sets(all_changes)
     new_entries = top_new_entries(changes_by_etf, 10)
+    strong_candidates = strong_candidate_changes(all_changes)
     amount_buys, amount_sells = aggregate_amount_flows(changes_by_etf)
 
-    width, height = 1600, 2600
+    width, height = 1600, 3000
     image = Image.new("RGB", (width, height), "#050608")
     draw = ImageDraw.Draw(image)
 
@@ -1194,6 +1242,7 @@ def build_image_report(
     red = "#ff4d5e"
     cyan = "#3dd6e8"
     green = "#19c37d"
+    gold = "#ffd24a"
 
     draw.rectangle([0, 0, width, 260], fill="#0b1016")
     draw.rectangle([0, 258, width, 260], fill=amber)
@@ -1265,6 +1314,8 @@ def build_image_report(
 
     y = section_title("신규 편입 TOP 10", "0%에서 플러스 비중으로 새로 편입된 종목", 460)
     y = draw_change_rows("신규 편입 종목", new_entries, y, green)
+    y = section_title("강한 후보 종목", "신규 편입 + 매수/증가 평균 이상 조건을 동시에 만족", y + 5)
+    y = draw_change_rows("강한 후보 종목", strong_candidates, y, gold, "GOLD SIGNAL")
     y = section_title("평균 이상 비중 변화", "매수/매도 각각의 평균 이상 변화만 추려낸 전략 후보", y + 5)
     y = draw_change_rows("매수/증가 평균 이상", above_buys, y, red, f"평균 {format_delta(buy_average)}")
     y = draw_change_rows("매도/감소 평균 이상", above_sells, y, cyan, f"평균 -{sell_average:.2f}pp")
@@ -1370,7 +1421,7 @@ def build_html_report(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</title>
   <style>
-    :root {{ color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }}
+    :root {{ color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --gold: #ffd24a; --gold-soft: #2d2509; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; font-family: Arial, 'Malgun Gothic', sans-serif; background: var(--bg); color: var(--text); letter-spacing: 0; }}
     header {{ border-bottom: 1px solid var(--line-strong); background: linear-gradient(180deg, #111821 0%, #07090c 100%); padding: 18px 22px 16px; }}
@@ -1402,8 +1453,12 @@ def build_html_report(
     .buy {{ color: var(--red); }}
     .sell {{ color: var(--cyan); }}
     .new {{ color: var(--green); }}
+    .strong {{ color: var(--gold); font-weight: 900; }}
+    tr.strong-row td {{ background: var(--gold-soft); color: var(--gold); }}
+    tr.strong-row:hover td {{ background: #3a300b; }}
     .empty {{ color: var(--muted); text-align: center; }}
     .new-entry-board {{ margin-top: 16px; overflow-x: auto; }}
+    .strong-candidate-board {{ margin-top: 16px; overflow-x: auto; border: 1px solid #6e5609; background: rgba(255, 210, 74, .05); border-radius: 4px; padding: 12px; }}
     .average-change-board {{ margin-top: 16px; overflow-x: auto; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
     .muted {{ color: var(--muted); font-size: 13px; }}

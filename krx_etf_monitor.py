@@ -33,7 +33,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "include_keywords": ["액티브"],
     "exclude_keywords": [
         "금리", "국채", "국고채", "국공채", "금융채", "은행채", "회사채", "특수채", "전단채", "채권",
-        "머니마켓", "비타", "유니콘", "vita", "hk", "ETF", "unicorn",
+        "머니마켓", "비타", "유니콘", "vita", "hk", "ETF", "unicorn", "tdf",
     ],
     "min_weight_delta_pp": 0.05,
     "max_etfs_in_telegram": 9999,

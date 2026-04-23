@@ -21,7 +21,8 @@
     "vita",
     "hk",
     "ETF",
-    "unicorn"
+    "unicorn",
+    "tdf"
   ],
   "min_weight_delta_pp": 0.05,
   "max_etfs_in_telegram": 9999,

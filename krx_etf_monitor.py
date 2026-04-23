@@ -278,6 +278,24 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS strong_candidat_entries (
+            trade_date TEXT NOT NULL,
+            etf_ticker TEXT NOT NULL,
+            etf_name TEXT NOT NULL,
+            holding_code TEXT NOT NULL,
+            holding_name TEXT NOT NULL,
+            current_weight REAL NOT NULL,
+            current_amount REAL,
+            amount_delta REAL,
+            weight_delta REAL NOT NULL,
+            average_abs_weight_delta REAL NOT NULL,
+            source_run_id INTEGER NOT NULL,
+            signal_type TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date, etf_ticker, holding_code),
+            FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS above_average_changes (
             run_id INTEGER NOT NULL,
             trade_date TEXT NOT NULL,
@@ -764,6 +782,47 @@ def save_daily_new_entries(conn: sqlite3.Connection, run_id: int, trade_date: st
                     item.current_amount,
                     item.amount_delta,
                     run_id,
+                    now,
+                )
+                for item in entries
+            ],
+        )
+    conn.commit()
+
+
+def save_strong_candidat_entries(conn: sqlite3.Connection, run_id: int, trade_date: str, changes: list[Change]) -> None:
+    buy_average, _, above_average_buys, _ = above_average_change_sets(changes)
+    above_buy_keys = {(item.etf_ticker, item.holding_code) for item in above_average_buys}
+    entries = [
+        item
+        for item in changes
+        if is_new_entry(item) and (item.etf_ticker, item.holding_code) in above_buy_keys
+    ]
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM strong_candidat_entries WHERE trade_date = ?", (trade_date,))
+    if entries:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO strong_candidat_entries (
+                trade_date, etf_ticker, etf_name, holding_code, holding_name,
+                current_weight, current_amount, amount_delta, weight_delta,
+                average_abs_weight_delta, source_run_id, signal_type, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    item.trade_date,
+                    item.etf_ticker,
+                    item.etf_name,
+                    item.holding_code,
+                    item.holding_name,
+                    item.current_weight,
+                    item.current_amount,
+                    item.amount_delta,
+                    item.weight_delta,
+                    buy_average,
+                    run_id,
+                    "NEW_AND_ABOVE_AVERAGE_BUY",
                     now,
                 )
                 for item in entries
@@ -1468,6 +1527,7 @@ def run_collection(args: argparse.Namespace) -> int:
             save_changes(conn, run_id, all_changes)
             save_new_entries(conn, run_id, all_changes)
             save_daily_new_entries(conn, run_id, trade_date, all_changes)
+            save_strong_candidat_entries(conn, run_id, trade_date, all_changes)
             save_above_average_changes(conn, run_id, all_changes)
             changes_by_etf: dict[str, list[Change]] = {}
             for change in all_changes:

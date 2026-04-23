@@ -31,7 +31,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "database_path": "data/krx_active_etf_holdings.sqlite",
     "watchlist": [],
     "include_keywords": ["액티브"],
-    "exclude_keywords": ["금리", "국채", "금융채", "은행채", "회사채", "채권", "머니마켓", "비타", "유니콘"],
+    "exclude_keywords": [
+        "금리", "국채", "국고채", "국공채", "금융채", "은행채", "회사채", "특수채", "전단채", "채권",
+        "머니마켓", "비타", "유니콘", "vita", "hk", "ETF", "unicorn",
+    ],
     "min_weight_delta_pp": 0.05,
     "max_etfs_in_telegram": 9999,
     "max_changes_per_etf": 10,
@@ -350,6 +353,8 @@ class KrxClient:
         watchlist = {str(ticker).zfill(6) for ticker in config.get("watchlist", []) if str(ticker).strip()}
         include_keywords = [str(v) for v in config.get("include_keywords", ["액티브"]) if str(v)]
         exclude_keywords = [str(v) for v in config.get("exclude_keywords", []) if str(v)]
+        include_keywords_lower = [keyword.lower() for keyword in include_keywords]
+        exclude_keywords_lower = [keyword.lower() for keyword in exclude_keywords]
         if not include_keywords and not watchlist:
             include_keywords = ["액티브"]
 
@@ -360,9 +365,10 @@ class KrxClient:
             name = self.etf_name(ticker)
             if watchlist and ticker not in watchlist:
                 continue
-            if not watchlist and include_keywords and not any(keyword in name for keyword in include_keywords):
+            name_lower = name.lower()
+            if not watchlist and include_keywords_lower and not any(keyword in name_lower for keyword in include_keywords_lower):
                 continue
-            if exclude_keywords and any(keyword in name for keyword in exclude_keywords):
+            if exclude_keywords_lower and any(keyword in name_lower for keyword in exclude_keywords_lower):
                 continue
             etfs.append(Etf(ticker=ticker, name=name, isin=self.etf_isin(ticker), market_cap=market_caps.get(ticker, 0.0)))
         return trade_date, sorted(etfs, key=lambda item: (item.name, item.ticker))

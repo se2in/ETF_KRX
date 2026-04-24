@@ -691,6 +691,18 @@ def is_new_entry(change: Change) -> bool:
     )
 
 
+def is_removed_entry(change: Change) -> bool:
+    return change.change_type == "REMOVED" or (
+        float(change.previous_weight or 0.0) > 0
+        and float(change.current_weight or 0.0) <= 0
+        and change.weight_delta < 0
+    )
+
+
+def is_cash_change(change: Change) -> bool:
+    return (change.holding_code or "") == "010010" or "원화현금" in (change.holding_name or "")
+
+
 def above_average_change_sets(changes: list[Change]) -> tuple[float, float, list[Change], list[Change]]:
     buy_changes = [item for item in changes if item.weight_delta > 0]
     sell_changes = [item for item in changes if item.weight_delta < 0]
@@ -978,6 +990,11 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
         key=lambda item: (float(item.current_weight or 0.0), abs(float(item.amount_delta or 0.0))),
         reverse=True,
     )
+    removed_entries = sorted(
+        [item for item in all_changes if is_removed_entry(item) and not is_cash_change(item)],
+        key=lambda item: (float(item.previous_weight or 0.0), abs(float(item.amount_delta or 0.0))),
+        reverse=True,
+    )
 
     def render_rows(rows: list[dict[str, Any]], side: str) -> str:
         if not rows:
@@ -1037,6 +1054,25 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
             )
         return "\n".join(html_rows)
 
+    def render_removed_entry_rows(items: list[Change]) -> str:
+        if not items:
+            return "<tr><td colspan=\"8\" class=\"empty\">\ud3b8\uc785 \uc81c\uc678 \uc885\ubaa9 \uc5c6\uc74c</td></tr>"
+        html_rows = []
+        for idx, item in enumerate(items, start=1):
+            html_rows.append(
+                "<tr>"
+                f"<td class=\"num\">{idx}</td>"
+                f"<td>{html_cell(item.etf_name)}</td>"
+                f"<td>{html_cell(item.etf_ticker)}</td>"
+                f"<td>{html_cell(item.holding_name)}</td>"
+                f"<td>{html_cell(item.holding_code)}</td>"
+                f"<td class=\"num sell\">{format_weight(item.previous_weight)}</td>"
+                f"<td class=\"num sell\">{format_weight(item.current_weight)}</td>"
+                f"<td class=\"num sell\">{format_krw(item.amount_delta)}</td>"
+                "</tr>"
+            )
+        return "\n".join(html_rows)
+
     return f"""
     <section class="etf-card flow-board">
       <div class="etf-head">
@@ -1066,6 +1102,13 @@ def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
         <table>
           <thead><tr><th>#</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
           <tbody>{render_new_entry_rows(new_entries)}</tbody>
+        </table>
+      </div>
+      <div class="removed-entry-board">
+        <h3>\ud3b8\uc785 \uc81c\uc678 \uc885\ubaa9 \uc804\uccb4</h3>
+        <table>
+          <thead><tr><th>#</th><th>ETF</th><th>ETF\ucf54\ub4dc</th><th>\uc885\ubaa9\uba85</th><th>\ucf54\ub4dc</th><th>\uc774\uc804</th><th>\ud604\uc7ac \ube44\uc911</th><th>\uae08\uc561\ubcc0\ud654</th></tr></thead>
+          <tbody>{render_removed_entry_rows(removed_entries)}</tbody>
         </table>
       </div>
       <div class="average-change-board">
@@ -1361,6 +1404,7 @@ def build_html_report(
     tr.gold-row td {{ color: var(--gold); font-weight: 900; }}
     .empty {{ color: var(--muted); text-align: center; }}
     .new-entry-board {{ margin-top: 16px; overflow-x: auto; }}
+    .removed-entry-board {{ margin-top: 16px; overflow-x: auto; }}
     .average-change-board {{ margin-top: 16px; overflow-x: auto; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
     .muted {{ color: var(--muted); font-size: 13px; }}

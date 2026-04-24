@@ -278,6 +278,40 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS removed_entries (
+            run_id INTEGER NOT NULL,
+            trade_date TEXT NOT NULL,
+            etf_ticker TEXT NOT NULL,
+            etf_name TEXT NOT NULL,
+            holding_code TEXT NOT NULL,
+            holding_name TEXT NOT NULL,
+            previous_weight REAL,
+            current_weight REAL,
+            previous_amount REAL,
+            current_amount REAL,
+            amount_delta REAL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, etf_ticker, holding_code),
+            FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_removed_entries (
+            trade_date TEXT NOT NULL,
+            etf_ticker TEXT NOT NULL,
+            etf_name TEXT NOT NULL,
+            holding_code TEXT NOT NULL,
+            holding_name TEXT NOT NULL,
+            previous_weight REAL,
+            current_weight REAL,
+            previous_amount REAL,
+            current_amount REAL,
+            amount_delta REAL,
+            source_run_id INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (trade_date, etf_ticker, holding_code),
+            FOREIGN KEY (source_run_id) REFERENCES runs(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS above_average_changes (
             run_id INTEGER NOT NULL,
             trade_date TEXT NOT NULL,
@@ -773,6 +807,74 @@ def save_daily_new_entries(conn: sqlite3.Connection, run_id: int, trade_date: st
                     item.holding_code,
                     item.holding_name,
                     item.current_weight,
+                    item.current_amount,
+                    item.amount_delta,
+                    run_id,
+                    now,
+                )
+                for item in entries
+            ],
+        )
+    conn.commit()
+
+
+def save_removed_entries(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -> None:
+    entries = [item for item in changes if is_removed_entry(item) and not is_cash_change(item)]
+    if not entries:
+        return
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO removed_entries (
+            run_id, trade_date, etf_ticker, etf_name,
+            holding_code, holding_name, previous_weight, current_weight,
+            previous_amount, current_amount, amount_delta, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                run_id,
+                item.trade_date,
+                item.etf_ticker,
+                item.etf_name,
+                item.holding_code,
+                item.holding_name,
+                item.previous_weight,
+                item.current_weight,
+                item.previous_amount,
+                item.current_amount,
+                item.amount_delta,
+                now,
+            )
+            for item in entries
+        ],
+    )
+    conn.commit()
+
+
+def save_daily_removed_entries(conn: sqlite3.Connection, run_id: int, trade_date: str, changes: list[Change]) -> None:
+    entries = [item for item in changes if is_removed_entry(item) and not is_cash_change(item)]
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM daily_removed_entries WHERE trade_date = ?", (trade_date,))
+    if entries:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO daily_removed_entries (
+                trade_date, etf_ticker, etf_name, holding_code, holding_name,
+                previous_weight, current_weight, previous_amount, current_amount,
+                amount_delta, source_run_id, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    item.trade_date,
+                    item.etf_ticker,
+                    item.etf_name,
+                    item.holding_code,
+                    item.holding_name,
+                    item.previous_weight,
+                    item.current_weight,
+                    item.previous_amount,
                     item.current_amount,
                     item.amount_delta,
                     run_id,
@@ -1528,6 +1630,8 @@ def run_collection(args: argparse.Namespace) -> int:
             save_changes(conn, run_id, all_changes)
             save_new_entries(conn, run_id, all_changes)
             save_daily_new_entries(conn, run_id, trade_date, all_changes)
+            save_removed_entries(conn, run_id, all_changes)
+            save_daily_removed_entries(conn, run_id, trade_date, all_changes)
             save_above_average_changes(conn, run_id, all_changes)
             changes_by_etf: dict[str, list[Change]] = {}
             for change in all_changes:

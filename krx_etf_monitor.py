@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 KST = ZoneInfo("Asia/Seoul")
+HOLIDAY_SKIP_EXIT_CODE = 20
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
 KRX_CREDENTIAL_SERVICE = "se2in-etf-monitor-krx"
 try:
@@ -1584,8 +1585,18 @@ def send_telegram(text: str) -> None:
 def run_collection(args: argparse.Namespace) -> int:
     load_env_file()
     config = load_config(args.config)
+    requested_date = normalize_date(args.date)
+    if datetime.strptime(requested_date, "%Y%m%d").weekday() >= 5:
+        print(f"KRX weekend detected. Collection skipped for {requested_date}.")
+        return HOLIDAY_SKIP_EXIT_CODE
     client = KrxClient()
-    requested_date = normalize_date(args.date) if args.date else None
+    nearest_trade_date = client.nearest_trade_date(requested_date)
+    if nearest_trade_date != requested_date:
+        print(
+            f"KRX market holiday/weekend. Collection skipped for {requested_date}. "
+            f"Nearest trade date is {nearest_trade_date}."
+        )
+        return HOLIDAY_SKIP_EXIT_CODE
     trade_date, etfs = client.discover_active_etfs(config, requested_date)
     if not etfs:
         raise RuntimeError("No active ETFs found.")

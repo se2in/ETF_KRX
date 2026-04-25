@@ -887,6 +887,65 @@ def save_daily_removed_entries(conn: sqlite3.Connection, run_id: int, trade_date
     conn.commit()
 
 
+def load_latest_snapshot_changes(
+    conn: sqlite3.Connection,
+    config: dict[str, Any],
+    exclude_run_id: int | None = None,
+) -> tuple[str, int, dict[str, list[Change]]] | None:
+    query = """
+        SELECT c.run_id, c.trade_date
+        FROM changes c
+        JOIN runs r ON r.id = c.run_id
+        WHERE r.status = 'SUCCESS'
+    """
+    params: list[Any] = []
+    if exclude_run_id is not None:
+        query += " AND c.run_id <> ?"
+        params.append(exclude_run_id)
+    query += """
+        GROUP BY c.run_id, c.trade_date
+        HAVING COUNT(*) > 0
+        ORDER BY c.trade_date DESC, c.run_id DESC
+        LIMIT 1
+    """
+    row = conn.execute(query, params).fetchone()
+    if row is None:
+        return None
+
+    exclude_keywords = [str(v).lower() for v in config.get("exclude_keywords", []) if str(v)]
+    change_rows = conn.execute(
+        """
+        SELECT c.*, e.name AS etf_name_from_table
+        FROM changes c
+        LEFT JOIN etfs e ON e.ticker = c.etf_ticker
+        WHERE c.run_id = ?
+        ORDER BY c.etf_ticker, ABS(c.weight_delta) DESC
+        """,
+        (row["run_id"],),
+    ).fetchall()
+    changes_by_etf: dict[str, list[Change]] = {}
+    for item in change_rows:
+        etf_name = item["etf_name_from_table"] or item["etf_ticker"]
+        if any(keyword in etf_name.lower() for keyword in exclude_keywords):
+            continue
+        change = Change(
+            item["trade_date"],
+            item["etf_ticker"],
+            etf_name,
+            item["holding_code"],
+            item["holding_name"],
+            item["previous_weight"],
+            item["current_weight"],
+            item["weight_delta"],
+            item["previous_amount"],
+            item["current_amount"],
+            item["amount_delta"] or 0.0,
+            item["change_type"],
+        )
+        changes_by_etf.setdefault(change.etf_ticker, []).append(change)
+    return row["trade_date"], row["run_id"], changes_by_etf
+
+
 def save_above_average_changes(conn: sqlite3.Connection, run_id: int, changes: list[Change]) -> None:
     buy_average, sell_average, above_average_buys, above_average_sells = above_average_change_sets(changes)
     rows: list[tuple[str, float, Change]] = [
@@ -975,7 +1034,14 @@ def html_signal_row_class(change: Change) -> str:
     return "gold-row" if is_large_new_entry(change) else ""
 
 
-def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, list[Change]], skipped: list[str], config: dict[str, Any]) -> str:
+def build_report(
+    trade_date: str,
+    etfs: list[Etf],
+    changes_by_etf: dict[str, list[Change]],
+    skipped: list[str],
+    config: dict[str, Any],
+    snapshot_notice: str = "",
+) -> str:
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     top_etfs = top_market_cap_etfs(etfs, 10)
     new_entry_top10 = top_new_entries(changes_by_etf, 10)
@@ -984,6 +1050,8 @@ def build_report(trade_date: str, etfs: list[Etf], changes_by_etf: dict[str, lis
     lines = [
         f"\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubaa8\ub2c8\ud130\ub9c1 ({generated_at})",
         "",
+        snapshot_notice,
+        "" if snapshot_notice else "",
         separator,
         "",
         "\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc0c1\uc704 10\uac1c",
@@ -1245,6 +1313,7 @@ def build_image_report(
     skipped: list[str],
     config: dict[str, Any],
     run_id: int,
+    snapshot_notice: str = "",
 ) -> Path:
     try:
         from PIL import Image, ImageDraw, ImageFont
@@ -1301,6 +1370,8 @@ def build_image_report(
     draw.text((42, 32), "EUGENE SECURITIES | ACTIVE ETF MONITOR", font=font_small, fill=amber)
     draw.text((42, 78), "유진증권 안상현 센터장의 ETF 변동율 체크", font=font_hero, fill=text)
     draw.text((42, 156), f"{pretty_date} 기준 | 생성 {generated_at} | AI 이미지 리포트", font=font_body, fill=muted)
+    if snapshot_notice:
+        draw.text((42, 192), snapshot_notice, font=font_small, fill=amber)
 
     metrics = [
         ("대상 ETF", len(etfs), amber),
@@ -1389,6 +1460,7 @@ def build_html_report(
     skipped: list[str],
     config: dict[str, Any],
     run_id: int,
+    snapshot_notice: str = "",
 ) -> Path:
     pretty_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
     changed_etfs = [etf for etf in etfs if changes_by_etf.get(etf.ticker)]
@@ -1461,6 +1533,10 @@ def build_html_report(
         skipped_items = "".join(f"<li>{html_cell(item)}</li>" for item in skipped)
         skipped_html = f"<details class=\"skipped\"><summary>\uc218\uc9d1 \uc2e4\ud328/\ub370\uc774\ud130 \uc5c6\uc74c {len(skipped)}\uac1c</summary><ul>{skipped_items}</ul></details>"
 
+    snapshot_html = ""
+    if snapshot_notice:
+        snapshot_html = f"<section class=\"etf-card snapshot-note\"><h2>{html_cell(snapshot_notice)}</h2></section>"
+
     no_change_html = "" if changed_etfs else "<section class=\"etf-card\"><h2>\uac10\uc9c0\ub41c \ube44\uc911 \ubcc0\ud654\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.</h2></section>"
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
     body = "\n".join(sections)
@@ -1510,6 +1586,8 @@ def build_html_report(
     .removed-entry-board {{ margin-top: 16px; overflow-x: auto; }}
     .average-change-board {{ margin-top: 16px; overflow-x: auto; }}
     .skipped {{ background: var(--amber-soft); border: 1px solid #7c5a00; border-radius: 4px; padding: 12px 14px; margin-bottom: 14px; color: var(--text); }}
+    .snapshot-note {{ border: 1px solid #7c5a00; background: var(--amber-soft); }}
+    .snapshot-note h2 {{ color: var(--amber); font-size: 16px; }}
     .muted {{ color: var(--muted); font-size: 13px; }}
     @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} .download-link {{ margin: 8px 0 0; }} }}
   </style>
@@ -1530,6 +1608,7 @@ def build_html_report(
   </div>
   <div class="tools"><input id="search" placeholder="ETF\uba85, ETF\ucf54\ub4dc, \uc885\ubaa9\uba85, \uc885\ubaa9\ucf54\ub4dc \uac80\uc0c9"></div>
   <p class="muted">\ud154\ub808\uadf8\ub7a8\uc740 \uc694\uc57d\ub9cc \ubcf4\ub0b4\uace0, \uc774 HTML\uc5d0\ub294 \uac10\uc9c0\ub41c \ubaa8\ub4e0 \ubcc0\ud654\uac00 \ud45c\uc2dc\ub429\ub2c8\ub2e4. \uc2e0\uaddc \ud3b8\uc785 \uc911 \uae08\uc561 \ubcc0\ud654 1,000\ub9cc\uc6d0 \uc774\uc0c1\uc740 \uae08\uc0c9\uc73c\ub85c \uac15\uc870\ud569\ub2c8\ub2e4. <a class="download-link" href="{image_url}" download>\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c \ub2e4\uc6b4\ub85c\ub4dc</a></p>
+  {snapshot_html}
   {flow_html}
   {skipped_html}
   {no_change_html}
@@ -1647,9 +1726,19 @@ def run_collection(args: argparse.Namespace) -> int:
             changes_by_etf: dict[str, list[Change]] = {}
             for change in all_changes:
                 changes_by_etf.setdefault(change.etf_ticker, []).append(change)
-            report = build_report(trade_date, etfs, changes_by_etf, skipped, config)
-            html_path = build_html_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
-            image_path = build_image_report(trade_date, etfs, changes_by_etf, skipped, config, run_id)
+            render_changes_by_etf = changes_by_etf
+            snapshot_notice = ""
+            if not any(render_changes_by_etf.values()):
+                snapshot = load_latest_snapshot_changes(conn, config, exclude_run_id=run_id)
+                if snapshot is not None:
+                    snapshot_trade_date, snapshot_run_id, snapshot_changes_by_etf = snapshot
+                    render_changes_by_etf = snapshot_changes_by_etf
+                    pretty_snapshot_date = datetime.strptime(snapshot_trade_date, "%Y%m%d").strftime("%Y-%m-%d")
+                    snapshot_notice = f"현재 변화가 없어 마지막 데이터 스냅샷({pretty_snapshot_date})을 표시합니다."
+                    skipped.append(f"마지막 데이터 스냅샷 로드: {pretty_snapshot_date} / run {snapshot_run_id}")
+            report = build_report(trade_date, etfs, render_changes_by_etf, skipped, config, snapshot_notice)
+            html_path = build_html_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
+            image_path = build_image_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
             public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
             public_image_url = str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip()
             report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\n\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c: {public_image_url}"

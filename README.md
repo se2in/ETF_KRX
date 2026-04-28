@@ -9,6 +9,7 @@
 - `run_krx_etf_monitor.bat`: 매일 실행할 버튼
 - `config.json`: DB 위치, 전체/일부 ETF 설정, 변화 기준 설정
 - `.env`: 텔레그램 토큰과 채팅 ID. GitHub에 올리면 안 됩니다.
+- `setup_goatcounter.bat`: 하루 방문자 수 확인용 GoatCounter 설정 버튼
 - `data/krx_active_etf_holdings.sqlite`: SQLite DB 파일
 
 ## 처음 한 번만 할 일
@@ -72,3 +73,25 @@ python .\krx_etf_monitor.py discover
 5. `install_daily_publish_tasks.bat` 실행
 
 그 다음부터는 매일 08:35, 09:05에 자동으로 수집/텔레그램/HTML/GitHub 업로드가 진행됩니다.
+
+## 하루 방문자 수 확인
+
+가장 쉬운 방법은 GoatCounter입니다.
+
+1. `setup_goatcounter.bat` 더블클릭
+2. GoatCounter에서 받은 주소 입력
+3. `run_collect_publish.bat` 한 번 실행
+
+입력 예시:
+
+```text
+https://yourcode.goatcounter.com/count
+```
+
+설정은 `config.json`의 이 줄에 저장됩니다.
+
+```json
+"goatcounter_endpoint": "https://yourcode.goatcounter.com/count"
+```
+
+설정 후에는 GitHub Pages 대시보드 방문 수가 GoatCounter 웹사이트에서 보입니다.

@@ -45,6 +45,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "image_report_path": "reports/latest_changes.png",
     "public_report_url": "https://se2in.github.io/ETF_KRX/",
     "public_image_url": "https://se2in.github.io/ETF_KRX/latest_changes.png",
+    "goatcounter_endpoint": "",
     "skip_unready_pdf": True,
     "unready_cash_weight_threshold": 90.0,
     "unready_removed_ratio_threshold": 0.6,
@@ -1468,6 +1469,13 @@ def build_html_report(
     total_buy = sum(len([item for item in changes if item.weight_delta > 0]) for changes in changes_by_etf.values())
     total_sell = sum(len([item for item in changes if item.weight_delta < 0]) for changes in changes_by_etf.values())
     image_url = html_cell(str(config.get("public_image_url", "latest_changes.png")))
+    goatcounter_endpoint = str(config.get("goatcounter_endpoint", "")).strip()
+    goatcounter_script = ""
+    if goatcounter_endpoint:
+        goatcounter_url = html.escape(goatcounter_endpoint, quote=True)
+        goatcounter_script = (
+            f"\n  <script data-goatcounter=\"{goatcounter_url}\" async src=\"https://gc.zgo.at/count.js\"></script>"
+        )
     flow_html = render_amount_flow_html(changes_by_etf)
 
     latest_path = Path(str(config.get("html_report_path", "reports/latest_changes.html")))
@@ -1591,6 +1599,7 @@ def build_html_report(
     .muted {{ color: var(--muted); font-size: 13px; }}
     @media (max-width: 720px) {{ main {{ padding: 14px; }} header {{ padding: 16px 14px; }} .tables {{ grid-template-columns: 1fr; overflow-x: auto; }} table {{ min-width: 620px; }} .download-link {{ margin: 8px 0 0; }} }}
   </style>
+  {goatcounter_script}
 </head>
 <body>
 <header>

@@ -31,6 +31,7 @@
   "image_report_path": "reports/latest_changes.png",
   "public_report_url": "https://se2in.github.io/ETF_KRX/",
   "public_image_url": "https://se2in.github.io/ETF_KRX/latest_changes.png",
+  "goatcounter_endpoint": "",
   "skip_unready_pdf": true,
   "unready_cash_weight_threshold": 90.0,
   "unready_removed_ratio_threshold": 0.6,

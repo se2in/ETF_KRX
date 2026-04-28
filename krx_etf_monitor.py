@@ -1605,7 +1605,7 @@ def build_html_report(
 <header>
   <div class="topline"><span class="ticker-dot"></span> EUGENE SECURITIES | ACTIVE ETF MONITOR</div>
   <h1>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</h1>
-  <p>{pretty_date} \uae30\uc900 | \uc0dd\uc131 {generated_at} | KRX PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654</p>
+  <p>{pretty_date} \uae30\uc900 | \uc0dd\uc131 {generated_at} | PDF \ubcf4\uc720\uc885\ubaa9 \ubcc0\ud654</p>
 </header>
 <main>
   <div class="summary">

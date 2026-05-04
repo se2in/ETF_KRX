@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 import requests
@@ -100,6 +101,20 @@ def load_env_file(path: Path = Path(".env")) -> None:
             continue
         key, value = line.split("=", 1)
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def make_build_id(trade_date: str, run_id: int, generated_at: datetime | None = None) -> str:
+    stamp = (generated_at or datetime.now(KST)).strftime("%Y%m%d%H%M%S")
+    return f"{trade_date}-run{run_id}-{stamp}"
+
+
+def append_cache_buster(url: str, build_id: str) -> str:
+    if not url or not build_id:
+        return url
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["v"] = build_id
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def load_config(path: str | None) -> dict[str, Any]:
@@ -1463,12 +1478,14 @@ def build_html_report(
     run_id: int,
     snapshot_notice: str = "",
 ) -> Path:
+    generated_dt = datetime.now(KST)
     pretty_date = datetime.strptime(trade_date, "%Y%m%d").strftime("%Y-%m-%d")
     changed_etfs = [etf for etf in etfs if changes_by_etf.get(etf.ticker)]
     total_changes = sum(len(changes) for changes in changes_by_etf.values())
     total_buy = sum(len([item for item in changes if item.weight_delta > 0]) for changes in changes_by_etf.values())
     total_sell = sum(len([item for item in changes if item.weight_delta < 0]) for changes in changes_by_etf.values())
-    image_url = html_cell(str(config.get("public_image_url", "latest_changes.png")))
+    build_id = make_build_id(trade_date, run_id, generated_dt)
+    image_url = html_cell(append_cache_buster(str(config.get("public_image_url", "latest_changes.png")), build_id))
     goatcounter_endpoint = str(config.get("goatcounter_endpoint", "")).strip()
     goatcounter_script = ""
     if goatcounter_endpoint:
@@ -1481,6 +1498,7 @@ def build_html_report(
     latest_path = Path(str(config.get("html_report_path", "reports/latest_changes.html")))
     latest_path.parent.mkdir(parents=True, exist_ok=True)
     dated_path = latest_path.parent / f"changes_{trade_date}_run_{run_id}.html"
+    version_path = latest_path.parent / "version.json"
 
     sections: list[str] = []
     for etf in changed_etfs:
@@ -1546,13 +1564,17 @@ def build_html_report(
         snapshot_html = f"<section class=\"etf-card snapshot-note\"><h2>{html_cell(snapshot_notice)}</h2></section>"
 
     no_change_html = "" if changed_etfs else "<section class=\"etf-card\"><h2>\uac10\uc9c0\ub41c \ube44\uc911 \ubcc0\ud654\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.</h2></section>"
-    generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    generated_at = generated_dt.strftime("%Y-%m-%d %H:%M:%S")
     body = "\n".join(sections)
     document = f"""<!doctype html>
 <html lang="ko">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="report-build-id" content="{build_id}">
   <title>\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubcc0\ub3d9\uc728 \uccb4\ud06c \ub300\uc26c\ubcf4\ub4dc</title>
   <style>
     :root {{ color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --gold: #ffd24a; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }}
@@ -1624,6 +1646,7 @@ def build_html_report(
   {body}
 </main>
 <script>
+  const REPORT_BUILD_ID = "{build_id}";
   const input = document.getElementById('search');
   input.addEventListener('input', () => {{
     const q = input.value.trim().toLowerCase();
@@ -1631,12 +1654,44 @@ def build_html_report(
       card.style.display = card.dataset.search.toLowerCase().includes(q) ? '' : 'none';
     }});
   }});
+
+  async function refreshIfStale() {{
+    try {{
+      const response = await fetch('./version.json?ts=' + Date.now(), {{ cache: 'no-store' }});
+      if (!response.ok) {{
+        return;
+      }}
+      const version = await response.json();
+      if (version.build_id && version.build_id !== REPORT_BUILD_ID) {{
+        const next = new URL(window.location.href);
+        next.searchParams.set('v', version.build_id);
+        window.location.replace(next.toString());
+      }}
+    }} catch (error) {{
+      console.debug('version check skipped', error);
+    }}
+  }}
+
+  refreshIfStale();
 </script>
 </body>
 </html>"""
 
     latest_path.write_text(document, encoding="utf-8")
     dated_path.write_text(document, encoding="utf-8")
+    version_path.write_text(
+        json.dumps(
+            {
+                "build_id": build_id,
+                "trade_date": trade_date,
+                "generated_at": generated_at,
+                "run_id": run_id,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return latest_path
 
 def split_telegram_message(text: str, limit: int = 3900) -> list[str]:
@@ -1745,11 +1800,12 @@ def run_collection(args: argparse.Namespace) -> int:
                     pretty_snapshot_date = datetime.strptime(snapshot_trade_date, "%Y%m%d").strftime("%Y-%m-%d")
                     snapshot_notice = f"현재 변화가 없어 마지막 데이터 스냅샷({pretty_snapshot_date})을 표시합니다."
                     skipped.append(f"마지막 데이터 스냅샷 로드: {pretty_snapshot_date} / run {snapshot_run_id}")
+            build_id = make_build_id(trade_date, run_id)
             report = build_report(trade_date, etfs, render_changes_by_etf, skipped, config, snapshot_notice)
             html_path = build_html_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
             image_path = build_image_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
-            public_report_url = str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip()
-            public_image_url = str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip()
+            public_report_url = append_cache_buster(str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip(), build_id)
+            public_image_url = append_cache_buster(str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip(), build_id)
             report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\n\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c: {public_image_url}"
             finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; image={image_path}")
         except Exception as exc:

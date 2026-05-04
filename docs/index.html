@@ -3,6 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta name="report-build-id" content="20260504-run-latest-20260504093931">
   <title>유진증권 안상현 센터장의 ETF 변동율 체크 대쉬보드</title>
   <style>
     :root { color-scheme: dark; --bg: #050608; --panel: #101318; --line: #2a3038; --line-strong: #3b434f; --text: #f2f5f8; --muted: #9aa6b2; --amber: #f5b301; --amber-soft: #2a230f; --gold: #ffd24a; --green: #19c37d; --red: #ff4d5e; --cyan: #3dd6e8; }
@@ -2771,6 +2775,7 @@
             
 </main>
 <script>
+  const REPORT_BUILD_ID = "20260504-run-latest-20260504093931";
   const input = document.getElementById('search');
   input.addEventListener('input', () => {
     const q = input.value.trim().toLowerCase();
@@ -2778,6 +2783,25 @@
       card.style.display = card.dataset.search.toLowerCase().includes(q) ? '' : 'none';
     });
   });
+
+  async function refreshIfStale() {
+    try {
+      const response = await fetch('./version.json?ts=' + Date.now(), { cache: 'no-store' });
+      if (!response.ok) {
+        return;
+      }
+      const version = await response.json();
+      if (version.build_id && version.build_id !== REPORT_BUILD_ID) {
+        const next = new URL(window.location.href);
+        next.searchParams.set('v', version.build_id);
+        window.location.replace(next.toString());
+      }
+    } catch (error) {
+      console.debug('version check skipped', error);
+    }
+  }
+
+  refreshIfStale();
 </script>
 </body>
 </html>

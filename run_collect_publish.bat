@@ -26,8 +26,14 @@ if not exist ".\reports\latest_changes.png" (
   pause
   exit /b 1
 )
+if not exist ".\reports\version.json" (
+  echo ERROR: reports\version.json was not created.
+  pause
+  exit /b 1
+)
 copy /Y ".\reports\latest_changes.html" ".\docs\index.html" >nul
 copy /Y ".\reports\latest_changes.png" ".\docs\latest_changes.png" >nul
+copy /Y ".\reports\version.json" ".\docs\version.json" >nul
 
 echo [3/5] Checking Git repository...
 git rev-parse --is-inside-work-tree >nul 2>nul
@@ -39,7 +45,7 @@ if errorlevel 1 (
 )
 
 echo [4/5] Committing public reports...
-git add .\docs\index.html .\docs\latest_changes.png
+git add .\docs\index.html .\docs\latest_changes.png .\docs\version.json
 git commit -m "Update ETF public reports" || echo No report changes to commit.
 
 echo [5/5] Pushing to GitHub...

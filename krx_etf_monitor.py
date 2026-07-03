@@ -21,6 +21,10 @@ import requests
 
 KST = ZoneInfo("Asia/Seoul")
 HOLIDAY_SKIP_EXIT_CODE = 20
+DUPLICATE_SKIP_EXIT_CODE = 21
+RUN_LOCK_FILE = Path("data/.krx_collect.lock")
+RUN_LOCK_STALE_HOURS = 6
+KRX_SESSION_REFRESH_MINUTES = 50
 os.environ.setdefault("MPLCONFIGDIR", str(Path(".matplotlib-cache").resolve()))
 KRX_CREDENTIAL_SERVICE = "se2in-etf-monitor-krx"
 try:
@@ -203,6 +207,75 @@ def open_db(database_path: str) -> sqlite3.Connection:
     return conn
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=KST)
+    return parsed.astimezone(KST)
+
+
+def is_pid_running(pid: Any) -> bool:
+    try:
+        pid_int = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid_int <= 0:
+        return False
+    try:
+        os.kill(pid_int, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def acquire_run_lock(lock_path: Path = RUN_LOCK_FILE, stale_hours: int = RUN_LOCK_STALE_HOURS) -> bool:
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": datetime.now(KST).isoformat(timespec="seconds"),
+    }
+    for _ in range(2):
+        try:
+            with open(lock_path, "x", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+            return True
+        except FileExistsError:
+            try:
+                existing = json.loads(lock_path.read_text(encoding="utf-8"))
+            except Exception:
+                existing = {}
+            started_at = _parse_iso_datetime(existing.get("started_at"))
+            pid_running = is_pid_running(existing.get("pid"))
+            is_stale = (
+                not pid_running
+                or started_at is None
+                or (datetime.now(KST) - started_at) >= timedelta(hours=stale_hours)
+            )
+            if not is_stale:
+                return False
+            try:
+                lock_path.unlink()
+            except FileNotFoundError:
+                pass
+    return False
+
+
+def release_run_lock(lock_path: Path = RUN_LOCK_FILE) -> None:
+    try:
+        lock_path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, column_type: str) -> None:
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
@@ -360,6 +433,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 class KrxClient:
     def __init__(self) -> None:
+        self.created_at = datetime.now(KST)
         self.stock = get_pykrx_stock()
         from pykrx.website.krx import get_etx_isin
         from pykrx.website.krx.etx.core import PDF
@@ -441,6 +515,9 @@ class KrxClient:
 
     def fetch_holdings(self, etf: Etf, date: str | None) -> tuple[str, list[Holding]]:
         trade_date = self.nearest_trade_date(date)
+        return self.fetch_holdings_for_trade_date(etf, trade_date)
+
+    def fetch_holdings_for_trade_date(self, etf: Etf, trade_date: str) -> tuple[str, list[Holding]]:
         isin = etf.isin or self.etf_isin(etf.ticker)
         if not isin:
             return trade_date, []
@@ -697,6 +774,27 @@ def start_run(conn: sqlite3.Connection, trade_date: str) -> int:
 def finish_run(conn: sqlite3.Connection, run_id: int, status: str, message: str = "") -> None:
     now = datetime.now(KST).isoformat(timespec="seconds")
     conn.execute("UPDATE runs SET ended_at = ?, status = ?, message = ? WHERE id = ?", (now, status, message, run_id))
+    conn.commit()
+
+
+def mark_stale_running_runs(conn: sqlite3.Connection, stale_hours: int = RUN_LOCK_STALE_HOURS) -> None:
+    cutoff = datetime.now(KST) - timedelta(hours=stale_hours)
+    cutoff_iso = cutoff.isoformat(timespec="seconds")
+    now = datetime.now(KST).isoformat(timespec="seconds")
+    conn.execute(
+        """
+        UPDATE runs
+        SET ended_at = ?, status = 'FAILED',
+            message = CASE
+                WHEN COALESCE(message, '') = '' THEN ?
+                ELSE message || ' | ' || ?
+            END
+        WHERE status = 'RUNNING'
+          AND ended_at IS NULL
+          AND started_at < ?
+        """,
+        (now, "stale run recovered by monitor", "stale run recovered by monitor", cutoff_iso),
+    )
     conn.commit()
 
 
@@ -1166,6 +1264,65 @@ def aggregate_amount_flows(changes_by_etf: dict[str, list[Change]]) -> tuple[lis
     buy_rows = sorted(buys.values(), key=lambda row: row["amount"], reverse=True)[:20]
     sell_rows = sorted(sells.values(), key=lambda row: row["amount"], reverse=True)[:20]
     return buy_rows, sell_rows
+
+
+def build_telegram_report(
+    trade_date: str,
+    etfs: list[Etf],
+    changes_by_etf: dict[str, list[Change]],
+    skipped: list[str],
+    config: dict[str, Any],
+    snapshot_notice: str = "",
+) -> str:
+    generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    new_entry_top10 = top_new_entries(changes_by_etf, 10)
+    aggregate_buys, aggregate_sells = aggregate_amount_flows(changes_by_etf)
+    separator = "-" * 91
+
+    lines = [
+        f"\uc720\uc9c4\uc99d\uad8c \uc548\uc0c1\ud604 \uc13c\ud130\uc7a5\uc758 ETF \ubaa8\ub2c8\ud130\ub9c1 ({generated_at})",
+        "",
+    ]
+
+    if snapshot_notice:
+        lines.extend([snapshot_notice, ""])
+
+    lines.extend([separator, "", "\uc2e0\uaddc \ud3b8\uc785 \uc885\ubaa9 \uc0c1\uc704 10\uac1c"])
+
+    if new_entry_top10:
+        for rank, item in enumerate(new_entry_top10, start=1):
+            lines.append(
+                f"{rank}. \U0001F7E2 {item.holding_name}({item.holding_code}) / "
+                f"{item.etf_name}({item.etf_ticker}) "
+                f"{format_weight(item.previous_weight)} -> {format_weight(item.current_weight)} "
+                f"({format_delta(item.weight_delta)}, {format_krw(item.amount_delta)})"
+            )
+    else:
+        lines.append("None")
+
+    lines.extend(["", separator, "", "[All] Aggregate buys Top 10"])
+
+    if aggregate_buys:
+        for rank, row in enumerate(aggregate_buys[:10], start=1):
+            lines.append(
+                f"{rank}. {row['holding_name']}({row['holding_code']}) "
+                f"{format_krw(row['amount'])} ({len(row['etfs'])}ETF)"
+            )
+    else:
+        lines.append("None")
+
+    lines.extend(["", "[All] Aggregate sells Top 10"])
+
+    if aggregate_sells:
+        for rank, row in enumerate(aggregate_sells[:10], start=1):
+            lines.append(
+                f"{rank}. {row['holding_name']}({row['holding_code']}) "
+                f"{format_krw(row['amount'])} ({len(row['etfs'])}ETF)"
+            )
+    else:
+        lines.append("None")
+
+    return "\n".join(lines)
 
 
 def render_amount_flow_html(changes_by_etf: dict[str, list[Change]]) -> str:
@@ -1717,12 +1874,23 @@ def send_telegram(text: str) -> None:
     if not token or not chat_id:
         raise RuntimeError("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is missing in .env")
     for chunk in split_telegram_message(text):
-        response = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
-            timeout=20,
-        )
-        response.raise_for_status()
+        last_error: Exception | None = None
+        for attempt in range(1, 4):
+            try:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
+                    timeout=20,
+                )
+                response.raise_for_status()
+                last_error = None
+                break
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < 3:
+                    time.sleep(3 * attempt)
+        if last_error is not None:
+            raise RuntimeError(f"Telegram send failed after retries: {last_error}") from last_error
 
 
 def run_collection(args: argparse.Namespace) -> int:
@@ -1732,90 +1900,104 @@ def run_collection(args: argparse.Namespace) -> int:
     if datetime.strptime(requested_date, "%Y%m%d").weekday() >= 5:
         print(f"KRX weekend detected. Collection skipped for {requested_date}.")
         return HOLIDAY_SKIP_EXIT_CODE
+    if not acquire_run_lock():
+        print("Another ETF collection run is already in progress. This run was skipped.")
+        return DUPLICATE_SKIP_EXIT_CODE
     client = KrxClient()
-    nearest_trade_date = client.nearest_trade_date(requested_date)
-    if nearest_trade_date != requested_date:
-        print(
-            f"KRX market holiday/weekend. Collection skipped for {requested_date}. "
-            f"Nearest trade date is {nearest_trade_date}."
-        )
-        return HOLIDAY_SKIP_EXIT_CODE
-    trade_date, etfs = client.discover_active_etfs(config, requested_date)
-    if not etfs:
-        raise RuntimeError("No active ETFs found.")
+    try:
+        nearest_trade_date = client.nearest_trade_date(requested_date)
+        if nearest_trade_date != requested_date:
+            print(
+                f"KRX market holiday/weekend. Collection skipped for {requested_date}. "
+                f"Nearest trade date is {nearest_trade_date}."
+            )
+            return HOLIDAY_SKIP_EXIT_CODE
+        trade_date, etfs = client.discover_active_etfs(config, nearest_trade_date)
+        if not etfs:
+            raise RuntimeError("No active ETFs found.")
 
-    with open_db(config["database_path"]) as conn:
-        init_db(conn)
-        run_id = start_run(conn, trade_date)
-        all_changes: list[Change] = []
-        skipped: list[str] = []
-        try:
-            upsert_etfs(conn, etfs, trade_date)
-            for etf in etfs:
-                try:
-                    actual_date, holdings = client.fetch_holdings(etf, requested_date)
-                    time.sleep(float(args.sleep))
-                    if not holdings:
-                        skipped.append(f"{etf.name}({etf.ticker}): \ub370\uc774\ud130 \uc5c6\uc74c \ub610\ub294 PDF \ubbf8\uc5c5\ub370\uc774\ud2b8")
-                        continue
-                    prev_date = previous_trade_date_in_db(conn, etf.ticker, actual_date)
-                    previous_holdings = load_holdings_from_db(conn, etf.ticker, prev_date) if prev_date else {}
-                    current_holdings = holding_compare_rows(holdings)
-                    reason = unready_pdf_reason(etf, previous_holdings, current_holdings, config) if prev_date else None
-                    if reason:
-                        existing_current = load_holdings_from_db(conn, etf.ticker, actual_date)
-                        if unready_pdf_reason(etf, previous_holdings, existing_current, config):
-                            delete_holdings_for_date(conn, etf, actual_date)
-                        skipped.append(f"{etf.name}({etf.ticker}): {reason}")
-                        continue
-                    replace_holdings(conn, etf, actual_date, holdings)
-                    if not prev_date:
-                        continue
-                    changes = compare_holdings(
-                        etf,
-                        actual_date,
-                        previous_holdings,
-                        current_holdings,
-                        min_delta=float(config.get("min_weight_delta_pp", 0.05)),
-                    )
-                    all_changes.extend(changes)
-                except Exception as exc:
-                    skipped.append(f"{etf.name}({etf.ticker}): {exc}")
-            save_changes(conn, run_id, all_changes)
-            save_new_entries(conn, run_id, all_changes)
-            save_daily_new_entries(conn, run_id, trade_date, all_changes)
-            save_removed_entries(conn, run_id, all_changes)
-            save_daily_removed_entries(conn, run_id, trade_date, all_changes)
-            save_above_average_changes(conn, run_id, all_changes)
-            changes_by_etf: dict[str, list[Change]] = {}
-            for change in all_changes:
-                changes_by_etf.setdefault(change.etf_ticker, []).append(change)
-            render_changes_by_etf = changes_by_etf
-            snapshot_notice = ""
-            if not any(render_changes_by_etf.values()):
-                snapshot = load_latest_snapshot_changes(conn, config, exclude_run_id=run_id)
-                if snapshot is not None:
-                    snapshot_trade_date, snapshot_run_id, snapshot_changes_by_etf = snapshot
-                    render_changes_by_etf = snapshot_changes_by_etf
-                    pretty_snapshot_date = datetime.strptime(snapshot_trade_date, "%Y%m%d").strftime("%Y-%m-%d")
-                    snapshot_notice = f"현재 변화가 없어 마지막 데이터 스냅샷({pretty_snapshot_date})을 표시합니다."
-                    skipped.append(f"마지막 데이터 스냅샷 로드: {pretty_snapshot_date} / run {snapshot_run_id}")
-            build_id = make_build_id(trade_date, run_id)
-            report = build_report(trade_date, etfs, render_changes_by_etf, skipped, config, snapshot_notice)
-            html_path = build_html_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
-            image_path = build_image_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
-            public_report_url = append_cache_buster(str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip(), build_id)
-            public_image_url = append_cache_buster(str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip(), build_id)
-            report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\n\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c: {public_image_url}"
-            finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; image={image_path}")
-        except Exception as exc:
-            finish_run(conn, run_id, "FAILED", str(exc))
-            raise
+        with open_db(config["database_path"]) as conn:
+            init_db(conn)
+            mark_stale_running_runs(conn)
+            run_id = start_run(conn, trade_date)
+            all_changes: list[Change] = []
+            skipped: list[str] = []
+            try:
+                upsert_etfs(conn, etfs, trade_date)
+                client_started_at = datetime.now(KST)
+                total_etfs = len(etfs)
+                for index, etf in enumerate(etfs, start=1):
+                    try:
+                        if datetime.now(KST) - client_started_at >= timedelta(minutes=KRX_SESSION_REFRESH_MINUTES):
+                            print("Refreshing KRX session...")
+                            client = KrxClient()
+                            client_started_at = datetime.now(KST)
+                        print(f"[{index}/{total_etfs}] {etf.name} ({etf.ticker})")
+                        actual_date, holdings = client.fetch_holdings_for_trade_date(etf, trade_date)
+                        time.sleep(float(args.sleep))
+                        if not holdings:
+                            skipped.append(f"{etf.name}({etf.ticker}): \ub370\uc774\ud130 \uc5c6\uc74c \ub610\ub294 PDF \ubbf8\uc5c5\ub370\uc774\ud2b8")
+                            continue
+                        prev_date = previous_trade_date_in_db(conn, etf.ticker, actual_date)
+                        previous_holdings = load_holdings_from_db(conn, etf.ticker, prev_date) if prev_date else {}
+                        current_holdings = holding_compare_rows(holdings)
+                        reason = unready_pdf_reason(etf, previous_holdings, current_holdings, config) if prev_date else None
+                        if reason:
+                            existing_current = load_holdings_from_db(conn, etf.ticker, actual_date)
+                            if unready_pdf_reason(etf, previous_holdings, existing_current, config):
+                                delete_holdings_for_date(conn, etf, actual_date)
+                            skipped.append(f"{etf.name}({etf.ticker}): {reason}")
+                            continue
+                        replace_holdings(conn, etf, actual_date, holdings)
+                        if not prev_date:
+                            continue
+                        changes = compare_holdings(
+                            etf,
+                            actual_date,
+                            previous_holdings,
+                            current_holdings,
+                            min_delta=float(config.get("min_weight_delta_pp", 0.05)),
+                        )
+                        all_changes.extend(changes)
+                    except Exception as exc:
+                        skipped.append(f"{etf.name}({etf.ticker}): {exc}")
+                save_changes(conn, run_id, all_changes)
+                save_new_entries(conn, run_id, all_changes)
+                save_daily_new_entries(conn, run_id, trade_date, all_changes)
+                save_removed_entries(conn, run_id, all_changes)
+                save_daily_removed_entries(conn, run_id, trade_date, all_changes)
+                save_above_average_changes(conn, run_id, all_changes)
+                changes_by_etf: dict[str, list[Change]] = {}
+                for change in all_changes:
+                    changes_by_etf.setdefault(change.etf_ticker, []).append(change)
+                render_changes_by_etf = changes_by_etf
+                snapshot_notice = ""
+                if not any(render_changes_by_etf.values()):
+                    snapshot = load_latest_snapshot_changes(conn, config, exclude_run_id=run_id)
+                    if snapshot is not None:
+                        snapshot_trade_date, snapshot_run_id, snapshot_changes_by_etf = snapshot
+                        render_changes_by_etf = snapshot_changes_by_etf
+                        pretty_snapshot_date = datetime.strptime(snapshot_trade_date, "%Y%m%d").strftime("%Y-%m-%d")
+                        snapshot_notice = f"현재 변화가 없어 마지막 데이터 스냅샷({pretty_snapshot_date})을 표시합니다."
+                        skipped.append(f"마지막 데이터 스냅샷 로드: {pretty_snapshot_date} / run {snapshot_run_id}")
+                build_id = make_build_id(trade_date, run_id)
+                report = build_telegram_report(trade_date, etfs, render_changes_by_etf, skipped, config, snapshot_notice)
+                html_path = build_html_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
+                image_path = build_image_report(trade_date, etfs, render_changes_by_etf, skipped, config, run_id, snapshot_notice)
+                public_report_url = append_cache_buster(str(config.get("public_report_url", "https://se2in.github.io/ETF_KRX/")).strip(), build_id)
+                public_image_url = append_cache_buster(str(config.get("public_image_url", "https://se2in.github.io/ETF_KRX/latest_changes.png")).strip(), build_id)
+                report = f"{report}\n\n\uc804\uccb4 HTML \ub9ac\ud3ec\ud2b8: {public_report_url}\n\uc774\ubbf8\uc9c0 \ubcf4\uace0\uc11c: {public_image_url}"
+                finish_run(conn, run_id, "SUCCESS", f"{len(all_changes)} changes; html={html_path}; image={image_path}")
+            except Exception as exc:
+                finish_run(conn, run_id, "FAILED", str(exc))
+                raise
 
-    print(report)
-    if args.send_telegram:
-        send_telegram(report)
-    return 0
+        print(report)
+        if args.send_telegram:
+            send_telegram(report)
+        return 0
+    finally:
+        release_run_lock()
 
 
 def run_discover(args: argparse.Namespace) -> int:
